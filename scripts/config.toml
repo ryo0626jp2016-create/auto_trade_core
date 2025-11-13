@@ -1,0 +1,9 @@
+[keepa]
+api_key = "${{ secrets.KEEPA_API_KEY }}"
+domain = "JP"
+
+[selection]
+min_profit = 500
+min_roi = 0.3
+max_avg_rank_90d = 100000
+block_amazon_current_buybox = true
