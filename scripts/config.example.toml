@@ -1,0 +1,20 @@
+[keepa]
+# Keepa API キー（有料サブスクリプションで発行）
+api_key = "YOUR_KEEPA_API_KEY_HERE"
+
+# Amazonドメイン (例: "JP", "US", "DE" etc.)
+# 日本向けなら "JP"
+domain = "JP"
+
+[selection]
+# 利益の最低ライン（円）
+min_profit = 500
+
+# ROI（利益 ÷ 仕入れ）の最低ライン（例: 0.3 = 30%）
+min_roi = 0.3
+
+# 過去90日平均ランキングの上限
+max_avg_rank_90d = 100000
+
+# 現在Amazon本体がカートを取っていたらNGにするか
+block_amazon_current_buybox = true
