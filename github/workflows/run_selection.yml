@@ -1,0 +1,66 @@
+name: Run auto_trade_core selection
+
+on:
+  # 手動実行用
+  workflow_dispatch:
+
+  # 毎日自動実行（例: 毎日 15:00 UTC = 日本時間 0:00 or 24:00）
+  schedule:
+    - cron: '0 15 * * *'
+
+jobs:
+  run-selection:
+    runs-on: ubuntu-latest
+
+    env:
+      # Python で使用する環境変数など必要ならここに
+      # 例: TZ: Asia/Tokyo
+      TZ: Asia/Tokyo
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Generate config.toml from secret
+        run: |
+          mkdir -p scripts
+          cat > scripts/config.toml << 'EOF'
+          [keepa]
+          api_key = "${{ secrets.KEEPA_API_KEY }}"
+          domain = "JP"
+
+          [selection]
+          # 利益の最低ライン（円）
+          min_profit = 500
+
+          # ROI（利益 ÷ 仕入れ）の最低ライン（例: 0.3 = 30%）
+          min_roi = 0.3
+
+          # 過去90日平均ランキングの上限
+          max_avg_rank_90d = 100000
+
+          # 現在Amazon本体がカートを取っていたらNGにするか
+          block_amazon_current_buybox = true
+          EOF
+
+      - name: Run selection script
+        run: |
+          python -m scripts.run_selection
+
+      - name: Upload result artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: output_selected
+          path: data/output_selected.csv
+          if-no-files-found: warn
