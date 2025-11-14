@@ -40,17 +40,19 @@ jobs:
           domain = "JP"
 
           [selection]
+          # 🔽 テスト用に一旦めちゃくちゃゆるくしている設定 🔽
+
           # 利益の最低ライン（円）
-          min_profit = 500
+          min_profit = 0
 
           # ROI（利益 ÷ 仕入れ）の最低ライン（例: 0.3 = 30%）
-          min_roi = 0.3
+          min_roi = 0.0
 
-          # 過去90日平均ランキングの上限
-          max_avg_rank_90d = 100000
+          # 過去90日平均ランキングの上限（テスト用にほぼ制限なし）
+          max_avg_rank_90d = 999999
 
           # 現在Amazon本体がカートを取っていたらNGにするか
-          block_amazon_current_buybox = true
+          block_amazon_current_buybox = false
           EOF
 
       - name: Run selection script
