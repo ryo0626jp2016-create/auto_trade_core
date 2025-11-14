@@ -6,7 +6,7 @@ domain = "JP"
 min_profit = -999999      # 利益判定を完全無効化
 min_roi = -999            # ROI判定を無効化
 max_avg_rank_90d = 999999 # ランク条件を実質無効化
-block_amazon_current_buybox = false
+block_amazon_current_buybox = true
 
 # デバッグモード：FBA手数料・Amazon手数料を無視して常に0円扱い
 debug_no_fees = true
