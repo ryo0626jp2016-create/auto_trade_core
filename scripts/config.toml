@@ -1,12 +1,10 @@
 [keepa]
-api_key = ""
+api_key = "ach00vu874jtpkb4pbom0bqh37end3hrs19vlqk003g6ibegfh2q27lpb1vdfhhj"
 domain = "JP"
 
 [selection]
-min_profit = -999999      # 利益判定を完全無効化
-min_roi = -999            # ROI判定を無効化
-max_avg_rank_90d = 999999 # ランク条件を実質無効化
+min_profit = 300
+min_roi = 0.3
+max_avg_rank_90d = 100000
 block_amazon_current_buybox = true
-
-# デバッグモード：FBA手数料・Amazon手数料を無視して常に0円扱い
-debug_no_fees = true
+debug_no_fba_fee = false
