@@ -1,7 +1,5 @@
 [selection]
-min_profit = 0
-min_roi = 0.0
-max_avg_rank_90d = 999999
-block_amazon_current_buybox = false
-max_amazon_presence_ratio = 1.0
-max_amazon_buybox_count = 999
+min_profit = 1      # 1円でも黒字ならOK
+min_roi = 0.0       # ROI条件は一旦無視
+max_avg_rank_90d = 500000
+block_amazon_current_buybox = true
