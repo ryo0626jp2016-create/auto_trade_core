@@ -4,7 +4,7 @@ import tomllib  # Python 3.11 以降
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
 
-import keepa  # pip install keepa
+import requests  # 直接 Keepa HTTP API を叩く用
 
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.toml")
@@ -119,37 +119,83 @@ def analyze_amazon_presence(product: Dict[str, Any]) -> Dict[str, Optional[float
     }
 
 
+def _get_domain_id(domain_str: str) -> int:
+    """
+    Keepa の domain ID に変換する。
+    JP = 5
+    """
+    domain_str = (domain_str or "").upper()
+    mapping = {
+        "US": 1,
+        "UK": 2,
+        "DE": 3,
+        "FR": 4,
+        "JP": 5,
+        "CA": 6,
+        "CN": 7,
+        "IT": 8,
+        "ES": 9,
+        "IN": 10,
+        "MX": 11,
+        "BR": 12,
+    }
+    return mapping.get(domain_str, 5)  # デフォルトは日本
+
+
 def get_product_info(asin: str) -> Optional[ProductStats]:
     """
     指定した ASIN の Keepa 情報を取得し、仕入れ判定に必要な要約情報を返す。
+    ここでは Python の keepa ライブラリは使わず、
+    公式 HTTP API (https://api.keepa.com/product) を直接叩く。
     """
     config = load_keepa_config()
-    api = keepa.Keepa(config.api_key)
 
-    # デバッグ用：キー長 & ドメインを表示（キー本体はマスク）
-    print(f"[DEBUG] Keepa domain = {config.domain}")
+    print(f"[DEBUG] Keepa domain (string) = {config.domain}")
     print(f"[DEBUG] Keepa API key length = {len(config.api_key)}")
     if len(config.api_key) < 10:
         print("[ERROR] Keepa API key が短すぎます。config.toml / Secrets を確認してください。")
 
+    domain_id = _get_domain_id(config.domain)
+
+    params = {
+        "key": config.api_key,
+        "domain": domain_id,
+        "asin": asin,
+        "stats": 90,
+        "history": 1,
+        "buybox": 1,
+    }
+
     try:
-        # stats=90: 過去90日分の統計情報を含める
-        # history=True: 履歴データ（Amazon presence / BuyBox履歴など）を含める
-        products = api.query(
-            asin,
-            stats=90,
-            domain=config.domain,
-            history=True,
-            buybox=True,
-            rating=False,
-            offers=0,
-            progress_bar=False,
+        resp = requests.get(
+            "https://api.keepa.com/product",
+            params=params,
+            timeout=30,
         )
-    except RuntimeError as e:
-        # REQUEST_REJECTED など Keepa 側で弾かれた場合はこの商品だけスキップ
-        print(f"[ERROR] Keepa request rejected for ASIN {asin}: {e}")
+    except Exception as e:
+        print(f"[ERROR] HTTP error when calling Keepa for ASIN {asin}: {e}")
         return None
 
+    print(f"[DEBUG] HTTP status for ASIN {asin}: {resp.status_code}")
+
+    try:
+        data = resp.json()
+    except Exception as e:
+        print(f"[ERROR] Could not decode JSON for ASIN {asin}: {e}")
+        print(f"[DEBUG] Raw response: {resp.text[:200]}")
+        return None
+
+    # エラーが返ってきた場合は内容を表示してスキップ
+    if "error" in data and data["error"]:
+        print(f"[ERROR] Keepa API error for ASIN {asin}: {data['error']}")
+        # error オブジェクトの中身も詳しく
+        if isinstance(data["error"], dict):
+            print(f"[ERROR] details: {data['error'].get('details')}")
+            print(f"[ERROR] message: {data['error'].get('message')}")
+            print(f"[ERROR] type: {data['error'].get('type')}")
+        return None
+
+    products: List[Dict[str, Any]] = data.get("products") or []
     if not products:
         print(f"[WARN] Keepa returned no product for ASIN {asin}")
         return None
