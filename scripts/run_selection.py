@@ -2,10 +2,13 @@ from __future__ import annotations
 import csv
 import os
 from typing import List
-from scripts.keepa_api import get_product_info
-from scripts.fees import estimate_fba_fee, estimate_amazon_fee
 from dataclasses import dataclass
 import tomllib
+
+# 🔽 相対インポートに変更
+from .keepa_api import get_product_info
+from .fees import estimate_fba_fee, estimate_amazon_fee
+
 
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.toml")
