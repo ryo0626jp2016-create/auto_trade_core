@@ -1,11 +1,7 @@
-[keepa]
-api_key = "${{ secrets.KEEPA_API_KEY }}"
-domain = "JP"
-
 [selection]
 min_profit = 0
 min_roi = 0.0
-max_avg_rank_90d = 1000000
+max_avg_rank_90d = 999999
 block_amazon_current_buybox = false
 max_amazon_presence_ratio = 1.0
 max_amazon_buybox_count = 999
