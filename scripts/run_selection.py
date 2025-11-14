@@ -5,11 +5,10 @@ from typing import List
 from dataclasses import dataclass
 import tomllib
 
-# 🔽 ここを修正
+# 🔽 ここがポイント：正しいモジュールをインポート
 from .keepa_client import get_product_info
-from .fees import estimate_fba_fee, estimate_amazon_fee
-
-
+from .fba_fee import estimate_fba_fee
+from .profit_calc import estimate_amazon_fee
 
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.toml")
@@ -19,11 +18,11 @@ OUTPUT_CSV = os.path.join("data", "output_selected.csv")
 
 @dataclass
 class SelectionConfig:
-    min_profit: float
-    min_roi: float
-    max_avg_rank_90d: int
-    block_amazon_current_buybox: bool
-    debug_no_fba_fee: bool = False   # ←追加：デバッグモード
+    min_profit: float                  # 最低利益（円）
+    min_roi: float                     # 最低ROI
+    max_avg_rank_90d: int              # 平均ランキング上限
+    block_amazon_current_buybox: bool  # Amazonが現在カートならNG
+    debug_no_fba_fee: bool = False     # デバッグ用：手数料0にするフラグ
 
 
 def load_selection_config() -> SelectionConfig:
@@ -36,12 +35,17 @@ def load_selection_config() -> SelectionConfig:
         min_roi=s.get("min_roi", 0.0),
         max_avg_rank_90d=s.get("max_avg_rank_90d", 200000),
         block_amazon_current_buybox=s.get("block_amazon_current_buybox", True),
-        debug_no_fba_fee=s.get("debug_no_fba_fee", False)
+        debug_no_fba_fee=s.get("debug_no_fba_fee", False),
     )
 
 
 def read_candidates() -> List[tuple[str, float, str]]:
-    items = []
+    """
+    data/input_candidates.csv から
+    asin, buy_price, notes を読み込む
+    """
+    items: List[tuple[str, float, str]] = []
+
     if not os.path.exists(INPUT_CSV):
         print(f"[ERROR] input not found: {INPUT_CSV}")
         return items
@@ -51,8 +55,9 @@ def read_candidates() -> List[tuple[str, float, str]]:
         for row in reader:
             asin = row["asin"].strip()
             buy_price = float(row["buy_price"])
-            notes = row["notes"]
+            notes = row.get("notes", "")
             items.append((asin, buy_price, notes))
+
     return items
 
 
@@ -63,7 +68,7 @@ def main():
     candidates = read_candidates()
     print(f"Loaded {len(candidates)} candidate items.")
 
-    results = []
+    results: List[list] = []
 
     for asin, buy_price, notes in candidates:
         print(f"\n=== Evaluating ASIN {asin} ===")
@@ -128,7 +133,7 @@ def main():
             product.expected_sell_price,
             profit,
             roi,
-            notes
+            notes,
         ])
 
     # CSV出力
