@@ -1,10 +1,31 @@
+# ===============================
+#  Keepa 設定
+# ===============================
 [keepa]
-api_key = "ach00vu874jtpkb4pbom0bqh37end3hrs19vlqk003g6ibegfh2q27lpb1vdfhhj"
+# ！！！重要！！！
+# Keepa APIキーは絶対にここに直接書かないこと
+# GitHub Secrets に "KEEPA_API_KEY" を保存して使用する
+api_key = "${{ secrets.KEEPA_API_KEY }}"
 domain = "JP"
 
+
+# ===============================
+#  商品選定ロジック
+# ===============================
 [selection]
+# 最低利益（円）
 min_profit = 300
+
+# ROI（利益 ÷ 仕入れ値）
 min_roi = 0.3
-max_avg_rank_90d = 100000
+
+# ランキング条件（90日平均）
+# ※ 初心者〜中級者に最適な 25万位ライン
+max_avg_rank_90d = 250000
+
+# Amazon本体が現在BuyBoxなら除外する
 block_amazon_current_buybox = true
+
+# FBA手数料を計算しない（テスト用）
+# 通常は false にする
 debug_no_fba_fee = false
