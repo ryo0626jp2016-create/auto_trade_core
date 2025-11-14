@@ -1,216 +1,237 @@
+# scripts/run_selection.py
+
 from __future__ import annotations
 
 import csv
 import os
 from dataclasses import dataclass
-from typing import List
+from typing import List, Dict, Any, Optional
 
-import tomllib  # Python 3.11+
+import tomllib
+
 from .keepa_client import get_product_info, ProductStats
-
-# パス定義
-BASE_DIR = os.path.dirname(os.path.dirname(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-INPUT_CSV = os.path.join(DATA_DIR, "input_candidates.csv")
-OUTPUT_CSV = os.path.join(DATA_DIR, "output_selected.csv")
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.toml")
+from .profit_calc import calc_profit_with_fba
 
 
-# =========================
-# 設定読み込み
-# =========================
+BASE_DIR = os.path.dirname(__file__)
+CONFIG_PATH = os.path.join(BASE_DIR, "config.toml")
+INPUT_CSV_PATH = os.path.join(os.path.dirname(BASE_DIR), "data", "input_candidates.csv")
+OUTPUT_CSV_PATH = os.path.join(os.path.dirname(BASE_DIR), "data", "output_selected.csv")
+
+
 @dataclass
 class SelectionConfig:
     min_profit: int
     min_roi: float
     max_avg_rank_90d: int
     block_amazon_current_buybox: bool
-    max_amazon_presence_ratio: float  # 例: 0.3 = 30%
-    max_amazon_buybox_count: int      # 例: 10 回まで
 
 
 def load_selection_config() -> SelectionConfig:
+    """
+    scripts/config.toml の [selection] から選別条件を読み込む。
+    キーがなければそこそこ安全なデフォルト値を使う。
+    """
     with open(CONFIG_PATH, "rb") as f:
         raw = tomllib.load(f)
 
-    s = raw.get("selection", {})
+    sel = raw.get("selection", {})
 
     return SelectionConfig(
-        min_profit=int(s.get("min_profit", 500)),
-        min_roi=float(s.get("min_roi", 0.3)),
-        max_avg_rank_90d=int(s.get("max_avg_rank_90d", 100_000)),
-        block_amazon_current_buybox=bool(
-            s.get("block_amazon_current_buybox", True)
-        ),
-        max_amazon_presence_ratio=float(s.get("max_amazon_presence_ratio", 0.3)),
-        max_amazon_buybox_count=int(s.get("max_amazon_buybox_count", 10)),
+        min_profit=int(sel.get("min_profit", 0)),
+        min_roi=float(sel.get("min_roi", 0.0)),
+        max_avg_rank_90d=int(sel.get("max_avg_rank_90d", 999999)),
+        block_amazon_current_buybox=bool(sel.get("block_amazon_current_buybox", False)),
     )
 
 
-# =========================
-# 入力候補データ
-# =========================
-@dataclass
-class CandidateItem:
-    asin: str
-    buy_price: int
-    source: str
+def load_candidates(path: str = INPUT_CSV_PATH) -> List[Dict[str, Any]]:
+    """
+    data/input_candidates.csv から仕入れ候補を読み込む。
+    フォーマット:
+      asin,buy_price,source
+    """
+    if not os.path.exists(path):
+        print(f"[WARN] Candidate CSV not found: {path}")
+        return []
 
-
-def load_candidates() -> List[CandidateItem]:
-    items: List[CandidateItem] = []
-    if not os.path.exists(INPUT_CSV):
-        print(f"[WARN] input CSV not found: {INPUT_CSV}")
-        return items
-
-    with open(INPUT_CSV, newline="", encoding="utf-8") as f:
+    items: List[Dict[str, Any]] = []
+    with open(path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             asin = row.get("asin", "").strip()
             if not asin:
                 continue
             try:
-                buy_price = int(float(row.get("buy_price", "0")))
+                buy_price = float(row.get("buy_price", "0") or 0)
             except ValueError:
-                print(f"[WARN] invalid buy_price for ASIN {asin}: {row.get('buy_price')}")
-                continue
+                buy_price = 0.0
             source = row.get("source", "").strip() or "unknown"
-            items.append(CandidateItem(asin=asin, buy_price=buy_price, source=source))
 
+            items.append(
+                {
+                    "asin": asin,
+                    "buy_price": buy_price,
+                    "source": source,
+                }
+            )
     print(f"Loaded {len(items)} candidate items.")
     return items
 
 
-# =========================
-# 仕入れ判定ロジック
-# =========================
-def is_profitable(stats: ProductStats, buy_price: int, cfg: SelectionConfig) -> tuple[bool, str, float, float]:
+def evaluate_candidate(
+    asin: str,
+    buy_price: float,
+    source: str,
+    sel_cfg: SelectionConfig,
+) -> Optional[Dict[str, Any]]:
     """
-    仕入れ可否を判定する。
-    戻り値: (OKかどうか, 理由, 利益額, ROI)
+    1 商品(ASIN) について:
+      - Keepa から情報取得
+      - FBA 手数料込み利益計算
+      - 選別条件に合格すれば dict を返す
+      - NG の場合は None
     """
-    # 価格情報がなければ判定不可
-    if stats.expected_sell_price is None:
-        return False, "sell_price_missing", 0.0, 0.0
+    print(f"\n=== Evaluating ASIN {asin} ===")
 
-    sell_price = stats.expected_sell_price
+    product_stats: Optional[ProductStats] = get_product_info(asin)
+    if product_stats is None:
+        print(" - Skip: Could not fetch Keepa data.")
+        return None
 
-    # 手数料などは簡略化してまずは単純差分で計算（あとで拡張可）
-    profit = sell_price - buy_price
-    roi = profit / buy_price if buy_price > 0 else 0.0
+    print(f" - Title: {product_stats.title}")
+    print(f" - Expected sell price: {product_stats.expected_sell_price}")
+    print(f" - Avg rank 90d: {product_stats.avg_rank_90d}")
+    print(
+        f" - Amazon presence ratio: {product_stats.amazon_presence_ratio}, "
+        f"buybox_count: {product_stats.amazon_buybox_count}, "
+        f"current_is_amazon: {product_stats.amazon_current}"
+    )
 
-    # ランキング
-    if stats.avg_rank_90d is None:
-        return False, "rank_missing", profit, roi
-    if stats.avg_rank_90d > cfg.max_avg_rank_90d:
-        return False, f"rank_too_low_{stats.avg_rank_90d}", profit, roi
+    # 販売価格が取得できなければ判定不能
+    if product_stats.expected_sell_price is None:
+        print(" - Decision: NG (sell_price_missing)")
+        return None
 
-    # 利益・ROI
-    if profit < cfg.min_profit:
-        return False, f"profit_too_small_{profit}", profit, roi
-    if roi < cfg.min_roi:
-        return False, f"roi_too_small_{roi:.2f}", profit, roi
-
-    # ========== Amazon 本体チェック ==========
-    # 現在のBuyBoxがAmazonなら即NG
-    if cfg.block_amazon_current_buybox and stats.amazon_current:
-        return False, "amazon_current_buybox", profit, roi
-
-    # Amazon presence ratio（在庫率）が高すぎる
+    # ランキングチェック
     if (
-        stats.amazon_presence_ratio is not None
-        and stats.amazon_presence_ratio > cfg.max_amazon_presence_ratio
+        product_stats.avg_rank_90d is None
+        or product_stats.avg_rank_90d <= 0
     ):
-        return False, f"amazon_presence_high_{stats.amazon_presence_ratio:.2f}", profit, roi
+        print(" - Decision: NG (rank_missing)")
+        return None
 
-    # AmazonがBuyBoxを取っていた回数が多すぎる
-    if (
-        stats.amazon_buybox_count is not None
-        and stats.amazon_buybox_count > cfg.max_amazon_buybox_count
-    ):
-        return False, f"amazon_buybox_count_high_{stats.amazon_buybox_count}", profit, roi
+    if product_stats.avg_rank_90d > sel_cfg.max_avg_rank_90d:
+        print(f" - Decision: NG (rank_too_low_{product_stats.avg_rank_90d})")
+        return None
 
-    # ここまでクリアなら仕入れOK
-    return True, "ok", profit, roi
+    # Amazon本体が現在 BuyBox を取っている場合にブロック
+    if sel_cfg.block_amazon_current_buybox and product_stats.amazon_current:
+        print(" - Decision: NG (amazon_current_buybox)")
+        return None
+
+    # FBA手数料込み利益計算
+    profit_info = calc_profit_with_fba(
+        sell_price=product_stats.expected_sell_price,
+        buy_price=buy_price,
+        weight_kg=product_stats.weight_kg,
+        dimensions_cm=product_stats.dimensions_cm,
+        raw_category=product_stats.category,
+    )
+
+    profit = profit_info["profit"]
+    roi = profit_info["roi"]
+    fba_fee = profit_info["fba_fee"]
+    amazon_fee = profit_info["amazon_fee"]
+
+    print(f" - Profit (after FBA & Amazon fee): {profit}")
+    print(f" - ROI: {roi}")
+    print(f"   (FBA fee: {fba_fee}, Amazon fee: {amazon_fee})")
+
+    # 利益額・ROI でフィルタ
+    if profit < sel_cfg.min_profit:
+        print(f" - Decision: NG (profit_too_low_{profit})")
+        return None
+
+    if roi < sel_cfg.min_roi:
+        print(f" - Decision: NG (roi_too_low_{roi})")
+        return None
+
+    print(" - Decision: OK")
+
+    return {
+        "asin": asin,
+        "title": product_stats.title,
+        "expected_sell_price": product_stats.expected_sell_price,
+        "buy_price": buy_price,
+        "profit": profit,
+        "roi": roi,
+        "avg_rank_90d": product_stats.avg_rank_90d,
+        "amazon_presence_ratio": product_stats.amazon_presence_ratio,
+        "amazon_buybox_count": product_stats.amazon_buybox_count,
+        "amazon_current": product_stats.amazon_current,
+        "fba_fee": fba_fee,
+        "amazon_fee": amazon_fee,
+        "source": source,
+    }
 
 
-# =========================
-# メイン処理
-# =========================
-def main() -> None:
-    cfg = load_selection_config()
-    candidates = load_candidates()
-
-    selected_rows: List[dict] = []
-
-    for c in candidates:
-        print(f"\n=== Evaluating ASIN {c.asin} ===")
-
-        stats = get_product_info(c.asin)
-        if stats is None:
-            print(" - Skip: Could not fetch Keepa data.")
-            continue
-
-        ok, reason, profit, roi = is_profitable(stats, c.buy_price, cfg)
-
-        print(f" - Title: {stats.title}")
-        print(f" - Expected sell price: {stats.expected_sell_price}")
-        print(f" - Avg rank 90d: {stats.avg_rank_90d}")
-        print(f" - Profit: {profit:.0f}, ROI: {roi:.2%}")
-        print(
-            f" - Amazon presence ratio: {stats.amazon_presence_ratio}, "
-            f"buybox_count: {stats.amazon_buybox_count}, "
-            f"current_is_amazon: {stats.amazon_current}"
-        )
-        print(f" - Decision: {'OK' if ok else 'NG'} ({reason})")
-
-        if not ok:
-            continue
-
-        selected_rows.append(
-            {
-                "asin": c.asin,
-                "title": stats.title,
-                "buy_price": c.buy_price,
-                "expected_sell_price": stats.expected_sell_price,
-                "profit": round(profit),
-                "roi": round(roi, 3),
-                "avg_rank_90d": stats.avg_rank_90d,
-                "amazon_presence_ratio": (
-                    round(stats.amazon_presence_ratio, 3)
-                    if stats.amazon_presence_ratio is not None
-                    else None
-                ),
-                "amazon_buybox_count": stats.amazon_buybox_count,
-                "source": c.source,
-            }
-        )
-
-    # 結果を書き出し
-    if not selected_rows:
-        print("\nNo items passed the selection criteria. No CSV will be written.")
+def write_selected_items(items: List[Dict[str, Any]], path: str = OUTPUT_CSV_PATH) -> None:
+    """
+    合格した商品を CSV に書き出す。
+    """
+    if not items:
+        print("No items passed the selection criteria. No CSV will be written.")
         return
 
-    os.makedirs(DATA_DIR, exist_ok=True)
-    fieldnames = [
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    headers = [
         "asin",
         "title",
-        "buy_price",
         "expected_sell_price",
+        "buy_price",
         "profit",
         "roi",
         "avg_rank_90d",
         "amazon_presence_ratio",
         "amazon_buybox_count",
+        "amazon_current",
+        "fba_fee",
+        "amazon_fee",
         "source",
     ]
 
-    with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=headers)
         writer.writeheader()
-        writer.writerows(selected_rows)
+        for item in items:
+            writer.writerow(item)
 
-    print(f"\nWrote {len(selected_rows)} selected items to {OUTPUT_CSV}")
+    print(f"Wrote {len(items)} selected items to {path}")
+
+
+def main():
+    sel_cfg = load_selection_config()
+    candidates = load_candidates()
+
+    selected: List[Dict[str, Any]] = []
+
+    for c in candidates:
+        asin = c["asin"]
+        buy_price = c["buy_price"]
+        source = c["source"]
+
+        result = evaluate_candidate(
+            asin=asin,
+            buy_price=buy_price,
+            source=source,
+            sel_cfg=sel_cfg,
+        )
+        if result is not None:
+            selected.append(result)
+
+    write_selected_items(selected)
 
 
 if __name__ == "__main__":
