@@ -5,9 +5,10 @@ from typing import List
 from dataclasses import dataclass
 import tomllib
 
-# 🔽 相対インポートに変更
-from .keepa_api import get_product_info
+# 🔽 ここを修正
+from .keepa_client import get_product_info
 from .fees import estimate_fba_fee, estimate_amazon_fee
+
 
 
 
