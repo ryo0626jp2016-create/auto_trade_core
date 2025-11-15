@@ -1,0 +1,38 @@
+name: run-bulk-keepa-scan
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  bulk-keepa-scan:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Tokyo
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Ensure scripts directory exists
+        run: mkdir -p scripts
+
+      - name: Run bulk Keepa scan
+        run: |
+          python -m scripts.bulk_keepa_scan
+
+      - name: Upload candidates CSV
+        uses: actions/upload-artifact@v4
+        with:
+          name: keepa_scan_candidates
+          path: data/keepa_scan_candidates.csv
+          if-no-files-found: ignore
