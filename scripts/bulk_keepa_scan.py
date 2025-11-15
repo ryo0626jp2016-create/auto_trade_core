@@ -5,7 +5,8 @@ import time
 from dataclasses import dataclass
 from typing import List, Set, Optional
 
-from scripts.keepa_api import get_product_info  # すでに作った keepa_api.py を利用
+from .keepa_api import get_product_info
+
 
 
 # ====== 設定値（ここを調整すれば絞り方を変えられる） ======
