@@ -8,9 +8,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TZ: Asia/Tokyo
-      # 楽天API用（リポジトリの Secrets に設定しておく）
-      RAKUTEN_APP_ID: ${{ secrets.RAKUTEN_APP_ID }}
-      RAKUTEN_AFFILIATE_ID: ${{ secrets.RAKUTEN_AFFILIATE_ID }}
 
     steps:
       - name: Checkout repository
@@ -26,24 +23,40 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # 念のため scripts ディレクトリを作成（既にあっても問題なし）
       - name: Ensure scripts directory exists
         run: mkdir -p scripts
 
-      # ① 既存の selection 処理（ASIN候補CSVを作る）
+      # ① ASIN選定処理（Keepaで情報を取得して output_selected.csv を作成）
       - name: Run selection script
         run: |
           python -m scripts.run_selection
 
-      # ② Keepa + 楽天 でさらに厳選
+      # ② フィルタ（Keepa + 楽天API）
+      #    → output_selected.csv が存在するときだけ実行
       - name: Run ASIN filter (Keepa + 楽天)
         run: |
-          python scripts/filter_asins.py \
-            --input "data/output_selected.csv" \
-            --output-dir "output/filtered_asins"
+          if [ -f "data/output_selected.csv" ]; then
+            echo "data/output_selected.csv found. Running filter_asins.py ..."
+            python scripts/filter_asins.py \
+              --input "data/output_selected.csv" \
+              --output-dir "output/filtered_asins"
+          else
+            echo "data/output_selected.csv not found. Skip filter_asins step."
+          fi
 
-      # ③ 既存の CSV（念のためそのまま残す）
+      # ③ 選定結果（元CSV）
       - name: Upload result CSV
         uses: actions/upload-artifact@v4
         with:
           name: output_selected
           path: data/output_selected.csv
+          if-no-files-found: ignore
+
+      # ④ 厳選ASINリスト（Excel）
+      - name: Upload filtered ASIN files
+        uses: actions/upload-artifact@v4
+        with:
+          name: filtered_asins
+          path: output/filtered_asins/*.xlsx
+          if-no-files-found: ignore
