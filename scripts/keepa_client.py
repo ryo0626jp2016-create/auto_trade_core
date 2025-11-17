@@ -34,8 +34,8 @@ class ProductStats:
     amazon_current: bool                     # 現在の BuyBox が Amazon かどうか
 
     # FBA 手数料計算などに使うための追加情報
-    weight_kg: Optional[float]               # 梱包重量(kg) - Keepa packageWeight を g とみなして換算
-    dimensions_cm: Optional[Tuple[float, float, float]]  # (長辺, 中辺, 短辺) cm - packageLength/Width/Height
+    weight_kg: Optional[float]               # 梱包重量(kg)
+    dimensions_cm: Optional[Tuple[float, float, float]]  # (長辺, 中辺, 短辺) cm
     category: Optional[str]                  # productGroup 等から取ったざっくりカテゴリ
 
 
@@ -113,7 +113,6 @@ def analyze_amazon_presence(product: Dict[str, Any]) -> Dict[str, Any]:
     amazon_current = bool(stats.get("buyBoxIsAmazon", False))
 
     # Amazon 在庫の履歴（AMAZON フィールド）
-    # 値が 0 より大きいとき「Amazon本体が在庫を持っている」とみなす
     amazon_stock_history: List[int] = data.get("AMAZON") or []
     if amazon_stock_history:
         total = len(amazon_stock_history)
@@ -122,7 +121,6 @@ def analyze_amazon_presence(product: Dict[str, Any]) -> Dict[str, Any]:
             amazon_presence_ratio = count / total
 
     # Amazon が BuyBox を取っていた履歴
-    # BUY_BOX_IS_AMAZON_SHIPPING が 1 のところをカウント
     buybox_is_amazon_history: List[int] = data.get("BUY_BOX_IS_AMAZON_SHIPPING") or []
     if buybox_is_amazon_history:
         amazon_buybox_count = sum(1 for v in buybox_is_amazon_history if v == 1)
@@ -163,14 +161,9 @@ def _extract_weight_and_dimensions(
 ) -> Tuple[Optional[float], Optional[Tuple[float, float, float]]]:
     """
     Keepa product から重量(g)とサイズ(mm)を取得して、
-    FBA料金計算に使いやすいように
     - 重量: kg
     - サイズ: cm
     に変換して返す。
-
-    Keepa ドキュメントより:
-      - packageWeight: g
-      - packageLength / packageWidth / packageHeight: mm
     """
     package_weight = product.get("packageWeight")
     if isinstance(package_weight, (int, float)) and package_weight > 0:
@@ -183,7 +176,6 @@ def _extract_weight_and_dimensions(
     height_mm = product.get("packageHeight")
 
     if all(isinstance(v, (int, float)) and v > 0 for v in (length_mm, width_mm, height_mm)):
-        # mm -> cm
         dimensions_cm: Optional[Tuple[float, float, float]] = (
             length_mm / 10.0,
             width_mm / 10.0,
@@ -200,25 +192,17 @@ def _extract_category(product: Dict[str, Any]) -> Optional[str]:
     ざっくりしたカテゴリ情報を文字列で返す。
     FBA料金計算では「default / toys / beauty / electronics」など
     大雑把なカテゴリで分ける想定。
-
-    Keepa product には:
-      - productGroup
-      - categoryTree / categories
-    などがあるが、ここでは productGroup を優先的に使う。
     """
     pg = product.get("productGroup")
     if isinstance(pg, str) and pg:
         return pg
 
-    # なければ None（後段で 'default' として扱う）
     return None
 
 
 def get_product_info(asin: str) -> Optional[ProductStats]:
     """
     指定した ASIN の Keepa 情報を取得し、仕入れ判定に必要な要約情報を返す。
-    ここでは Python の keepa ライブラリは使わず、
-    公式 HTTP API (https://api.keepa.com/product) を直接叩く。
     """
     config = load_keepa_config()
 
@@ -227,15 +211,17 @@ def get_product_info(asin: str) -> Optional[ProductStats]:
     if len(config.api_key) < 10:
         print("[ERROR] Keepa API key が短すぎます。config.toml / Secrets を確認してください。")
 
-    domain_id = _get_domain_id(config.domain)
+    # ★ ここが重要：domain は「文字列の数字」で投げる
+    domain_id_str = str(_get_domain_id(config.domain))
+    print(f"[DEBUG] Keepa domain (id string) = {domain_id_str}")
 
-    # ★★ ここが重要：buybox パラメータは送らない ★★
     params = {
         "key": config.api_key,
-        "domain": domain_id,
+        "domain": domain_id_str,  # '5' などの文字列
         "asin": asin,
         "stats": 90,   # 過去90日の stats を取得
         "history": 1,  # 価格や在庫などの履歴 data を取得
+        "buybox": 1,   # BuyBox 履歴を取得
     }
 
     try:
@@ -260,7 +246,6 @@ def get_product_info(asin: str) -> Optional[ProductStats]:
     # エラーが返ってきた場合は内容を表示してスキップ
     if "error" in data and data["error"]:
         print(f"[ERROR] Keepa API error for ASIN {asin}: {data['error']}")
-        # error オブジェクトの中身も詳しく
         if isinstance(data["error"], dict):
             print(f"[ERROR] details: {data['error'].get('details')}")
             print(f"[ERROR] message: {data['error'].get('message')}")
