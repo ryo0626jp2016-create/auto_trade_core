@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import os
 import tomllib  # Python 3.11 以降
 from dataclasses import dataclass
@@ -18,15 +19,20 @@ class KeepaConfig:
 
 @dataclass
 class ProductStats:
+    """
+    Keepa product から「せどり判定」に必要な要約情報だけをまとめた構造体。
+    """
     asin: str
     title: str
     avg_rank_90d: Optional[int]
     expected_sell_price: Optional[float]  # 円（税抜き想定）
+
+    # Amazon 本体関連
     buybox_is_amazon: bool
-    # Amazon本体関連の追加情報
-    amazon_presence_ratio: Optional[float]   # Amazon本体がいた割合（0.0〜1.0）
-    amazon_buybox_count: Optional[int]       # AmazonがBuyBoxを取っていた回数
-    amazon_current: bool                     # 現在のBuyBoxがAmazonかどうか
+    amazon_presence_ratio: Optional[float]   # 過去履歴における Amazon 在庫あり割合（0.0〜1.0）
+    amazon_buybox_count: Optional[int]       # Amazon が BuyBox を取っていた回数
+    amazon_current: bool                     # 現在の BuyBox が Amazon かどうか
+
     # FBA 手数料計算などに使うための追加情報
     weight_kg: Optional[float]               # 梱包重量(kg) - Keepa packageWeight を g とみなして換算
     dimensions_cm: Optional[Tuple[float, float, float]]  # (長辺, 中辺, 短辺) cm - packageLength/Width/Height
@@ -34,6 +40,9 @@ class ProductStats:
 
 
 def load_keepa_config() -> KeepaConfig:
+    """
+    config.toml から [keepa] 設定を読み込む。
+    """
     with open(CONFIG_PATH, "rb") as f:
         raw = tomllib.load(f)
 
@@ -53,15 +62,17 @@ def _get_avg_rank_90d_from_stats(stats: Dict[str, Any]) -> Optional[int]:
     - stats["avg90"] は整数配列
     - 配列のインデックスは csv / data フィールドと同じ並び
       AMAZON, NEW, USED, SALES, LISTPRICE, ... の順
-    → SALES = index 3
+      → SALES = index 3
     """
     avg90: List[int] = stats.get("avg90") or []
     if len(avg90) <= 3:
         return None
+
     value = avg90[3]
     # ランキングが存在しない場合は 0 or -1 のこともあるのでチェック
     if value is None or value <= 0:
         return None
+
     return int(value)
 
 
@@ -70,7 +81,7 @@ def _get_expected_sell_price_from_stats(stats: Dict[str, Any]) -> Optional[float
     販売想定価格を stats から取得。
     まず buyBoxPrice を使い、なければ None を返す。
 
-    Keepa の価格は「通貨の1/100単位」で返ってくる（例: 2500 = 25.00）ため、
+    Keepa の価格は「通貨の 1/100 単位」で返ってくる（例: 2500 = 25.00）ため、
     100で割って実際の通貨に変換する。
     """
     raw_price = stats.get("buyBoxPrice")
@@ -81,15 +92,15 @@ def _get_expected_sell_price_from_stats(stats: Dict[str, Any]) -> Optional[float
     return raw_price / 100.0
 
 
-def analyze_amazon_presence(product: Dict[str, Any]) -> Dict[str, Optional[float] | Optional[int] | bool]:
+def analyze_amazon_presence(product: Dict[str, Any]) -> Dict[str, Any]:
     """
     Keepa product データから Amazon 本体の参入履歴を分析する。
 
     戻り値:
     {
-        "amazon_presence_ratio": 0.23,   # 過去期間の23%でAmazon在庫あり
-        "amazon_buybox_count": 5,        # AmazonがBuyBoxを取っていた履歴の回数
-        "amazon_current": True/False     # 現在のBuyBoxがAmazonかどうか
+        "amazon_presence_ratio": float | None,   # 過去期間の何割で Amazon 在庫ありか（0.0〜1.0）
+        "amazon_buybox_count": int | None,       # Amazon が BuyBox を取っていた回数
+        "amazon_current": bool,                  # 現在の BuyBox が Amazon かどうか
     }
     """
     stats: Dict[str, Any] = product.get("stats") or {}
@@ -98,10 +109,10 @@ def analyze_amazon_presence(product: Dict[str, Any]) -> Dict[str, Optional[float
     amazon_presence_ratio: Optional[float] = None
     amazon_buybox_count: Optional[int] = None
 
-    # 現在のBuyBoxがAmazonかどうか（statsに要約情報がある）
+    # 現在の BuyBox が Amazon かどうか（stats に要約情報がある）
     amazon_current = bool(stats.get("buyBoxIsAmazon", False))
 
-    # Amazon在庫の履歴（AMAZON フィールド）
+    # Amazon 在庫の履歴（AMAZON フィールド）
     # 値が 0 より大きいとき「Amazon本体が在庫を持っている」とみなす
     amazon_stock_history: List[int] = data.get("AMAZON") or []
     if amazon_stock_history:
@@ -110,7 +121,7 @@ def analyze_amazon_presence(product: Dict[str, Any]) -> Dict[str, Optional[float
         if total > 0:
             amazon_presence_ratio = count / total
 
-    # AmazonがBuyBoxを取っていた履歴
+    # Amazon が BuyBox を取っていた履歴
     # BUY_BOX_IS_AMAZON_SHIPPING が 1 のところをカウント
     buybox_is_amazon_history: List[int] = data.get("BUY_BOX_IS_AMAZON_SHIPPING") or []
     if buybox_is_amazon_history:
@@ -143,10 +154,13 @@ def _get_domain_id(domain_str: str) -> int:
         "MX": 11,
         "BR": 12,
     }
-    return mapping.get(domain_str, 5)  # デフォルトは日本
+    # デフォルトは日本
+    return mapping.get(domain_str, 5)
 
 
-def _extract_weight_and_dimensions(product: Dict[str, Any]) -> tuple[Optional[float], Optional[Tuple[float, float, float]]]:
+def _extract_weight_and_dimensions(
+    product: Dict[str, Any],
+) -> Tuple[Optional[float], Optional[Tuple[float, float, float]]]:
     """
     Keepa product から重量(g)とサイズ(mm)を取得して、
     FBA料金計算に使いやすいように
@@ -154,7 +168,7 @@ def _extract_weight_and_dimensions(product: Dict[str, Any]) -> tuple[Optional[fl
     - サイズ: cm
     に変換して返す。
 
-    QiitaやKeepaドキュメントより:
+    Keepa ドキュメントより:
       - packageWeight: g
       - packageLength / packageWidth / packageHeight: mm
     """
@@ -219,9 +233,9 @@ def get_product_info(asin: str) -> Optional[ProductStats]:
         "key": config.api_key,
         "domain": domain_id,
         "asin": asin,
-        "stats": 90,
-        "history": 1,
-        "buybox": 1,
+        "stats": 90,   # 過去90日の stats を取得
+        "history": 1,  # 価格や在庫などの履歴 data を取得
+        "buybox": 1,   # BuyBox 履歴を取得
     }
 
     try:
@@ -260,7 +274,7 @@ def get_product_info(asin: str) -> Optional[ProductStats]:
 
     p = products[0]
 
-    title = p.get("title", "")
+    title = p.get("title", "") or ""
     stats = p.get("stats") or {}
 
     avg_rank_90d = _get_avg_rank_90d_from_stats(stats)
