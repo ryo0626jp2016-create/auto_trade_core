@@ -1,29 +1,58 @@
-# filter_asins.py
+# scripts/filter_asins.py
 
-import os
+from __future__ import annotations
+
 import argparse
-from typing import List, Dict, Any
+import os
+from typing import List, Dict, Any, Optional, Tuple
 
 import pandas as pd
 
-from keepa_client import fetch_keepa_products, extract_keepa_metrics
-from filter_asins import get_rakuten_lowest_price_by_jan, calc_profit_and_roi  # 自ファイル内に書くなら適宜修正
+from scripts.keepa_client import get_product_info, ProductStats
 
 
-TURNOVER_THRESHOLD = 20      # 30日で20回以上
-MIN_PROFIT = 300             # 利益300円以上
-MIN_ROI = 30                 # ROI 30%以上
+# 閾値（澤口さん指定）
+TURNOVER_THRESHOLD_30D = 20      # 30日で20ドロップ以上（※ここは後でKeepa項目に合わせて調整）
+MIN_PROFIT = 300                 # 利益300円以上
+MIN_ROI = 30                     # ROI30%以上
+
+
+def estimate_amazon_fee(price: Optional[float]) -> float:
+    """
+    簡易Amazon手数料モデル（ざっくり）
+    ※あとでちゃんとカテゴリ別にしていけばOK
+    """
+    if price is None:
+        return 0.0
+    return price * 0.15 + 100  # 15% + 100円 仮置き
+
+
+def calc_profit_and_roi(
+    selling_price: Optional[float],
+    cost_price: Optional[float],
+) -> Tuple[Optional[float], Optional[float]]:
+    if selling_price is None or cost_price is None or cost_price <= 0:
+        return None, None
+
+    fee = estimate_amazon_fee(selling_price)
+    profit = selling_price - cost_price - fee
+    roi = (profit / cost_price) * 100 if profit is not None else None
+    return profit, roi
 
 
 def detect_asin_column(df: pd.DataFrame) -> str:
-    for cand in ["ASIN", "asin", "Asin"]:
+    for cand in ["asin", "ASIN", "Asin"]:
         if cand in df.columns:
             return cand
-    raise ValueError("ASIN列が見つかりません（ASIN / asin / Asin を想定）")
+    raise ValueError("ASIN列が見つかりません（asin / ASIN / Asin を想定）")
 
 
-def detect_category_column(df: pd.DataFrame) -> str | None:
-    for cand in ["カテゴリ", "カテゴリー", "category", "Category"]:
+def detect_cost_column(df: pd.DataFrame) -> Optional[str]:
+    """
+    仕入れ価格の列候補
+    （input_candidates.csv の列名に合わせて調整してもOK）
+    """
+    for cand in ["cost_price", "仕入れ価格", "cost", "仕入原価"]:
         if cand in df.columns:
             return cand
     return None
@@ -33,109 +62,109 @@ def filter_asins(
     input_path: str,
     output_dir: str,
 ) -> None:
-    df = pd.read_excel(input_path)
+    print(f"[INFO] filtering input: {input_path}")
+
+    # CSV 固定（run_selection の出力に合わせる）
+    df = pd.read_csv(input_path)
+
     asin_col = detect_asin_column(df)
-    cat_col = detect_category_column(df)
+    cost_col = detect_cost_column(df)
 
-    # ASIN一覧
-    asins: List[str] = (
-        df[asin_col]
-        .astype(str)
-        .str.strip()
-        .dropna()
-        .unique()
-        .tolist()
-    )
-
-    # Keepaでまとめて取得
-    products = fetch_keepa_products(asins)
-    product_by_asin: Dict[str, Dict[str, Any]] = {
-        p.get("asin"): p for p in products
-    }
-
-    filtered_rows: List[Dict[str, Any]] = []
-
-    for _, row in df.iterrows():
-        asin = str(row[asin_col]).strip()
-        product = product_by_asin.get(asin)
-        if not product:
-            continue
-
-        m = extract_keepa_metrics(product)
-
-        # 1) 回転率フィルタ
-        drops = m.get("sales_rank_drops_30")
-        if drops is None or drops < TURNOVER_THRESHOLD:
-            continue
-
-        # 2) Amazon本体不在
-        if m.get("has_amazon_offer"):
-            continue
-
-        # 3) 楽天最安値取得（JANベース）
-        jan = m.get("jan")
-        rakuten_price = get_rakuten_lowest_price_by_jan(jan)
-        if rakuten_price is None:
-            continue
-
-        # 4) 利益・ROI計算
-        selling_price = m.get("selling_price")
-        profit, roi = calc_profit_and_roi(selling_price, rakuten_price)
-
-        if profit is None or roi is None:
-            continue
-        if profit < MIN_PROFIT or roi < MIN_ROI:
-            continue
-
-        out_row: Dict[str, Any] = {
-            "ASIN": asin,
-            "タイトル": m.get("title"),
-            "回転数30日": drops,
-            "Amazon販売価格(概算)": selling_price,
-            "楽天最安価格": rakuten_price,
-            "概算利益": round(profit),
-            "ROI(%)": round(roi, 1),
-        }
-
-        if cat_col:
-            out_row["カテゴリ"] = row[cat_col]
-
-        filtered_rows.append(out_row)
-
-    if not filtered_rows:
-        print("条件を満たすASINがありませんでした。")
-        return
-
-    out_df = pd.DataFrame(filtered_rows)
+    if cost_col is None:
+        print("[WARN] 仕入れ価格の列が見つからなかったため、コストは仮に 0 として扱います。")
+        # コスト列が無い場合は 0 にして ROI 判定は実質スキップ気味になる
+        df["__tmp_cost"] = 0.0
+        cost_col = "__tmp_cost"
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # 全体まとめ
-    all_path = os.path.join(output_dir, "filtered_asins_all.xlsx")
-    out_df.to_excel(all_path, index=False)
-    print(f"全体ファイルを出力しました: {all_path}")
+    selected_rows: List[Dict[str, Any]] = []
 
-    # カテゴリ別出力
-    if "カテゴリ" in out_df.columns:
-        for cat, g in out_df.groupby("カテゴリ"):
-            safe_cat = str(cat) if cat else "unknown"
-            fname = f"filtered_asins_{safe_cat}.xlsx"
-            path = os.path.join(output_dir, fname)
-            g.to_excel(path, index=False)
-            print(f"カテゴリ別ファイルを出力しました: {path}")
+    for idx, row in df.iterrows():
+        asin = str(row[asin_col]).strip()
+        cost_price = float(row[cost_col])
+
+        print(f"[DEBUG] checking ASIN={asin}, cost_price={cost_price}")
+
+        info: Optional[ProductStats] = get_product_info(asin)
+        if info is None:
+            print(f"[WARN] Keepa情報が取得できなかったためスキップ: {asin}")
+            continue
+
+        # TODO: 回転率条件（30日で20以上）については
+        # 今の ProductStats にはドロップ回数を持っていないので、
+        # ひとまず avg_rank_90d が小さいもの（=売れ行き良い）だけ残す簡易判定にしておく
+        if info.avg_rank_90d is not None and info.avg_rank_90d > 100000:
+            print(f"[DEBUG] ランクが重すぎるため除外: {asin} (avg_rank_90d={info.avg_rank_90d})")
+            continue
+
+        # Amazon本体不在条件
+        if info.buybox_is_amazon or info.amazon_current:
+            print(f"[DEBUG] BuyBoxがAmazon本体のため除外: {asin}")
+            continue
+        if info.amazon_presence_ratio is not None and info.amazon_presence_ratio > 0.3:
+            print(f"[DEBUG] 過去にAmazon本体が居すぎるため除外: {asin} "
+                  f"(presence_ratio={info.amazon_presence_ratio:.2f})")
+            continue
+
+        selling_price = info.expected_sell_price
+        profit, roi = calc_profit_and_roi(selling_price, cost_price)
+
+        if profit is None or roi is None:
+            print(f"[DEBUG] 利益/ROIが計算できないため除外: {asin}")
+            continue
+
+        if profit < MIN_PROFIT or roi < MIN_ROI:
+            print(f"[DEBUG] 利益条件を満たさないため除外: {asin} (profit={profit}, roi={roi})")
+            continue
+
+        selected_rows.append(
+            {
+                "asin": asin,
+                "title": info.title,
+                "avg_rank_90d": info.avg_rank_90d,
+                "expected_sell_price": selling_price,
+                "cost_price": cost_price,
+                "profit": round(profit),
+                "roi": round(roi, 1),
+                "amazon_presence_ratio": info.amazon_presence_ratio,
+                "amazon_buybox_count": info.amazon_buybox_count,
+                "amazon_current": info.amazon_current,
+                "buybox_is_amazon": info.buybox_is_amazon,
+                "weight_kg": info.weight_kg,
+                "dimensions_cm": info.dimensions_cm,
+                "category": info.category,
+            }
+        )
+
+    if not selected_rows:
+        print("[INFO] 条件を満たすASINがありませんでした。空ファイルを出力します。")
+        out_df = pd.DataFrame(columns=[
+            "asin", "title", "avg_rank_90d", "expected_sell_price",
+            "cost_price", "profit", "roi",
+            "amazon_presence_ratio", "amazon_buybox_count",
+            "amazon_current", "buybox_is_amazon",
+            "weight_kg", "dimensions_cm", "category",
+        ])
+    else:
+        out_df = pd.DataFrame(selected_rows)
+
+    out_path = os.path.join(output_dir, "filtered_asins.csv")
+    out_df.to_csv(out_path, index=False)
+    print(f"[INFO] filtered ASIN list written to: {out_path}")
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--input",
         required=True,
-        help="ASIN候補リストExcelパス（例: data/ASIN候補リスト_美容_日用品.xlsx）",
+        help="入力CSV (例: data/output_selected.csv)",
     )
     parser.add_argument(
         "--output-dir",
         default="output/filtered_asins",
-        help="出力先ディレクトリ",
+        help="出力ディレクトリ",
     )
     args = parser.parse_args()
 
