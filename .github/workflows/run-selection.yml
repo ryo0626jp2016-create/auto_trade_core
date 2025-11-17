@@ -27,13 +27,32 @@ jobs:
       - name: Ensure scripts directory exists
         run: mkdir -p scripts
 
+      # ① 既存の selection 処理（ASIN候補CSVを作る）
       - name: Run selection script
         run: |
           python -m scripts.run_selection
 
+      # ② 新しく作ったフィルタを実行
+      #    入力ファイルは、あなたの環境に合わせて変更してOK
+      #    例：data/output_selected.csv や data/ASIN候補リスト_美容_日用品.xlsx など
+      - name: Run ASIN filter (Keepa + 楽天)
+        run: |
+          python scripts/filter_asins.py \
+            --input "data/output_selected.csv" \
+            --output-dir "output/filtered_asins"
+
+      # ③ 既存の CSV（念のためそのまま残す）
       - name: Upload result CSV
         uses: actions/upload-artifact@v4
         with:
           name: output_selected
           path: data/output_selected.csv
+          if-no-files-found: ignore
+
+      # ④ 新しい「厳選済みASINリスト」をアップロード
+      - name: Upload filtered ASIN files
+        uses: actions/upload-artifact@v4
+        with:
+          name: filtered_asins
+          path: output/filtered_asins/*.xlsx
           if-no-files-found: ignore
