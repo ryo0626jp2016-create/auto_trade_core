@@ -1,157 +1,123 @@
-# scripts/bulk_keepa_scan.py
+"""
+bulk_keepa_scan.py
+KeepaエクスポートCSVをまとめて読み込み → ASINごとにKeepa APIで詳細取得
+→ 仕入れ候補をCSV化するスクリプト
+"""
+
 from __future__ import annotations
-
-import csv
-import glob
 import os
-from pathlib import Path
-from typing import List, Set
+import csv
+from typing import List, Dict, Any, Optional
 
-from .keepa_client import get_product_info, ProductStats
-
-
-# === パス設定 =========================================================
-
-# リポジトリルート … scripts/ の 1 つ上
-BASE_DIR = Path(__file__).resolve().parent.parent
-
-# Keepa のベストセラー CSV を置くフォルダ
-# 必要なら自分の環境に合わせてフォルダ名だけ変えてOK
-INPUT_DIR = BASE_DIR / "data" / "bestsellers"
-
-# 出力する候補リスト CSV
-OUTPUT_PATH = BASE_DIR / "data" / "bulk_candidates.csv"
+# ★重要★ keepa_client を読み込む（あなたの環境に合わせて修正済）
+from scripts.keepa_client import get_product_info, ProductStats
 
 
-# === ユーティリティ ====================================================
+# === 入出力パス ===
+INPUT_DIR = os.path.join("data", "raw_keepa")
+OUTPUT_PATH = os.path.join("data", "keepa_scan_candidates.csv")
 
-def collect_asins_from_csv(file_path: Path) -> List[str]:
-    """1つの Keepa Export CSV から ASIN カラムを集める。"""
+
+def load_asin_from_csv(file_path: str) -> List[str]:
+    """
+    Keepa BestSeller CSV から ASIN を抽出する
+    - 1列目 or "ASIN" 列を優先して読み込む
+    """
     asins: List[str] = []
+    with open(file_path, "r", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        header = next(reader, [])
 
-    with file_path.open("r", encoding="utf-8-sig", newline="") as f:
-        reader = csv.DictReader(f)
-        # ヘッダー名のブレ対策（asin, ASIN など）
-        fieldnames = [name.lower() for name in reader.fieldnames or []]
-        if "asin" not in fieldnames:
-            print(f"[WARN] {file_path.name} に ASIN カラムがありません。スキップします。")
-            return asins
+        asin_index = None
+        for i, col in enumerate(header):
+            if col.strip().lower() == "asin":
+                asin_index = i
+                break
 
         for row in reader:
-            asin = (row.get("ASIN") or row.get("asin") or "").strip()
-            if asin:
+            if asin_index is not None and len(row) > asin_index:
+                asin = row[asin_index].strip()
+            else:
+                asin = row[0].strip()  # fallback
+
+            if asin and asin not in asins:
                 asins.append(asin)
 
-    print(f"[INFO] {file_path.name} から {len(asins)} 件の ASIN を取得しました。")
     return asins
 
 
-def collect_all_asins(input_dir: Path) -> List[str]:
-    """指定フォルダ配下の CSV から ASIN を重複なしで集約。"""
-    if not input_dir.exists():
-        print(f"[WARN] 入力ディレクトリが見つかりません: {input_dir}")
-        return []
+def scan_bulk_asins(asins: List[str]) -> List[Dict[str, Any]]:
+    """
+    ASINリストを順にKeepa APIで問い合わせて、必要情報を抽出してまとめる
+    """
+    results: List[Dict[str, Any]] = []
 
-    csv_files = sorted(input_dir.glob("*.csv"))
-    if not csv_files:
-        print(f"[WARN] {input_dir} 配下に CSV ファイルがありません。")
-        return []
+    for asin in asins:
+        print(f"=== Evaluating ASIN {asin} ===")
 
-    all_asins: Set[str] = set()
-
-    for csv_file in csv_files:
-        asins = collect_asins_from_csv(csv_file)
-        all_asins.update(asins)
-
-    all_list = sorted(all_asins)
-    print(f"[INFO] 合計 {len(all_list)} 件のユニーク ASIN を収集しました。")
-    return all_list
-
-
-# === メイン処理 ========================================================
-
-def main() -> None:
-    print("=== bulk_keepa_scan start ===")
-
-    asins = collect_all_asins(INPUT_DIR)
-    if not asins:
-        print("[WARN] ASIN が 1 件もありません。空の CSV を出力します。")
-
-    candidates: List[dict] = []
-
-    for idx, asin in enumerate(asins, start=1):
-        print(f"\n=== {idx}/{len(asins)} Evaluating ASIN {asin} ===")
-
-        info: ProductStats | None = get_product_info(asin)
+        info: Optional[ProductStats] = get_product_info(asin)
         if info is None:
-            print(" - Skip: Keepa から情報取得できませんでした。")
+            print(f" - Skip: Could not fetch Keepa data.")
             continue
-
-        # サイズ展開（None 対応）
-        length_cm = width_cm = height_cm = None
-        if info.dimensions_cm is not None:
-            length_cm, width_cm, height_cm = info.dimensions_cm
 
         row = {
             "asin": info.asin,
             "title": info.title,
-            "avg_rank_90d": info.avg_rank_90d or "",
-            "expected_sell_price": info.expected_sell_price or "",
-            "amazon_presence_ratio": (
-                round(info.amazon_presence_ratio, 4)
-                if info.amazon_presence_ratio is not None
-                else ""
-            ),
-            "amazon_buybox_count": info.amazon_buybox_count or "",
+            "avg_rank_90d": info.avg_rank_90d,
+            "expected_sell_price": info.expected_sell_price,
+            "amazon_presence_ratio": info.amazon_presence_ratio,
+            "amazon_buybox_count": info.amazon_buybox_count,
             "amazon_current": info.amazon_current,
-            "weight_kg": info.weight_kg or "",
-            "length_cm": length_cm or "",
-            "width_cm": width_cm or "",
-            "height_cm": height_cm or "",
-            "category": info.category or "",
-            # ここは仕入れ値をあとで手入力するための空欄
-            "buy_price": "",
+            "weight_kg": info.weight_kg,
+            "dimensions_cm": info.dimensions_cm,
+            "category": info.category,
         }
+        results.append(row)
 
-        candidates.append(row)
-        print(
-            f" - Title: {info.title[:60]}..."
-            f"\n   avg_rank_90d={info.avg_rank_90d}, "
-            f"sell_price={info.expected_sell_price}, "
-            f"amazon_current={info.amazon_current}"
-        )
+    return results
 
-    # data ディレクトリを念のため作成
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    fieldnames = [
-        "asin",
-        "title",
-        "avg_rank_90d",
-        "expected_sell_price",
-        "amazon_presence_ratio",
-        "amazon_buybox_count",
-        "amazon_current",
-        "weight_kg",
-        "length_cm",
-        "width_cm",
-        "height_cm",
-        "category",
-        "buy_price",
-    ]
+def save_results_to_csv(rows: List[Dict[str, Any]], output_path: str) -> None:
+    """
+    スキャン結果をCSVで保存
+    """
+    if not rows:
+        print("No results to save.")
+        return
 
-    # ★候補が 0 件でも必ず CSV を出力する★
-    with OUTPUT_PATH.open("w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    with open(output_path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         writer.writeheader()
-        if candidates:
-            writer.writerows(candidates)
+        writer.writerows(rows)
 
-    print(
-        f"\n[INFO] {len(candidates)} 件の候補を {OUTPUT_PATH} に書き出しました。"
-        "（0 件でもヘッダーのみの CSV を出力）"
-    )
-    print("=== bulk_keepa_scan end ===")
+    print(f"Saved: {output_path}")
+
+
+def main():
+    # === Step1: raw_keepa フォルダ内のCSVを全部読み込む ===
+    if not os.path.exists(INPUT_DIR):
+        print(f"[ERROR] Input directory not found: {INPUT_DIR}")
+        return
+
+    all_asins: List[str] = []
+    for filename in os.listdir(INPUT_DIR):
+        if filename.endswith(".csv"):
+            path = os.path.join(INPUT_DIR, filename)
+            print(f"[INFO] Loading ASINs from {path}")
+            asins = load_asin_from_csv(path)
+            all_asins.extend(asins)
+
+    # 重複除去
+    all_asins = list(dict.fromkeys(all_asins))
+    print(f"[INFO] Total ASINs loaded: {len(all_asins)}")
+
+    # === Step2: Keepaで詳細スキャン ===
+    results = scan_bulk_asins(all_asins)
+
+    # === Step3: 保存 ===
+    save_results_to_csv(results, OUTPUT_PATH)
 
 
 if __name__ == "__main__":
