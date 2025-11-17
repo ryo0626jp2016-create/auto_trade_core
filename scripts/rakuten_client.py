@@ -1,99 +1,102 @@
+# scripts/rakuten_client.py
 from __future__ import annotations
 
 import os
-from typing import Optional, Tuple, List, Dict, Any
+from dataclasses import dataclass
+from typing import Optional
 
 import requests
 
-RAKUTEN_APP_ID = os.getenv("RAKUTEN_APP_ID")
-RAKUTEN_AFFILIATE_ID = os.getenv("RAKUTEN_AFFILIATE_ID")
-
-RAKUTEN_ITEM_SEARCH_URL = "https://app.rakuten.co.jp/services/api/IchibaItem/Search/20220601"
+RAKUTEN_API_URL = "https://app.rakuten.co.jp/services/api/IchibaItem/Search/20220601"
 
 
-def _ensure_app_id() -> bool:
+@dataclass
+class RakutenItem:
     """
-    楽天アプリIDが設定されているかチェック。
-    未設定なら警告を出して False を返す。
+    楽天市場APIから取得した商品1件分の簡易情報
     """
-    if not RAKUTEN_APP_ID:
-        print("[WARN] RAKUTEN_APP_ID が未設定のため、楽天API検索をスキップします。")
-        return False
-    return True
+    item_name: str
+    item_price: float
+    item_url: str
+    shop_name: Optional[str] = None
 
 
-def search_rakuten_items_by_jan(jan: str, hits: int = 10) -> List[Dict[str, Any]]:
+class RakutenClient:
     """
-    JANコードで楽天市場APIを検索し、商品リストを返す。
-    見つからない・エラーの場合は空リスト。
+    楽天市場 商品検索API 用の簡易クライアント。
     """
-    if not jan:
-        return []
-    if not _ensure_app_id():
-        return []
+    def __init__(self, application_id: str):
+        self.application_id = (application_id or "").strip()
 
-    params = {
-        "applicationId": RAKUTEN_APP_ID,
-        "format": "json",
-        "isbnjan": jan,
-        "hits": hits,
-        "sort": "+itemPrice",  # 価格昇順
-    }
+    @classmethod
+    def from_env(cls) -> "RakutenClient":
+        """
+        環境変数から applicationId を読む。
+        未設定ならキーなしクライアント（常に検索スキップ）として返す。
+        """
+        app_id = (
+            os.getenv("RAKUTEN_APPLICATION_ID")
+            or os.getenv("RAKUTEN_APP_ID")
+            or os.getenv("RAKUTEN_API_KEY")
+        )
 
-    try:
-        resp = requests.get(RAKUTEN_ITEM_SEARCH_URL, params=params, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as e:
-        print(f"[ERROR] Rakuten API error for JAN {jan}: {e}")
-        return []
+        if not app_id:
+            print("[WARN] 楽天APIキー (RAKUTEN_APPLICATION_ID) が設定されていません。楽天検索はスキップされます。")
 
-    items = data.get("Items") or []
-    results: List[Dict[str, Any]] = []
+        return cls(app_id or "")
 
-    for entry in items:
-        item = entry.get("Item") or {}
-        results.append(item)
+    def search_by_keyword(self, keyword: str) -> Optional[RakutenItem]:
+        """
+        キーワードで1件だけ商品を検索し、最安値っぽいものを返す。
+        APIキーが無い場合は None を返してスキップ。
+        """
+        keyword = (keyword or "").strip()
+        if not keyword:
+            return None
 
-    return results
+        if not self.application_id:
+            # APIキーなし → 何もせずスキップ
+            return None
 
+        params = {
+            "applicationId": self.application_id,
+            "keyword": keyword,
+            "hits": 1,          # 1件だけ
+            "sort": "+itemPrice",  # 価格の安い順
+            "format": "json",
+        }
 
-def get_lowest_price_and_url_by_jan(jan: str) -> Tuple[Optional[float], Optional[str]]:
-    """
-    JANコードで検索し、最安値(itemPrice)とその商品のURL(アフィリ付き)を返す。
-    見つからなければ (None, None)。
-    """
-    items = search_rakuten_items_by_jan(jan, hits=10)
-    if not items:
-        return None, None
+        try:
+            resp = requests.get(RAKUTEN_API_URL, params=params, timeout=10)
+        except Exception as e:
+            print(f"[WARN] Rakuten API HTTP error: {e}")
+            return None
 
-    # すでに価格昇順で返っているので最初の要素が最安
-    item = items[0]
-    price = item.get("itemPrice")
-    if price is None:
-        return None, None
+        if resp.status_code != 200:
+            print(f"[WARN] Rakuten API status {resp.status_code}: {resp.text[:200]}")
+            return None
 
-    try:
-        price_float = float(price)
-    except Exception:
-        price_float = None
+        try:
+            data = resp.json()
+        except Exception as e:
+            print(f"[WARN] Rakuten API JSON decode error: {e}")
+            return None
 
-    url = build_rakuten_affiliate_url(item)
+        items = data.get("Items") or []
+        if not items:
+            return None
 
-    return price_float, url
+        first = items[0].get("Item") or {}
+        price = first.get("itemPrice")
+        name = first.get("itemName")
+        url = first.get("itemUrl")
 
+        if price is None or url is None:
+            return None
 
-def build_rakuten_affiliate_url(item: Dict[str, Any]) -> Optional[str]:
-    """
-    楽天API item dict からアフィリエイトURLを生成。
-    RAKUTEN_AFFILIATE_ID が未設定なら通常URLを返す。
-    """
-    base_url = item.get("itemUrl")
-    if not base_url:
-        return None
-
-    if not RAKUTEN_AFFILIATE_ID:
-        return base_url
-
-    # 一番シンプルな scid 付与
-    return f"{base_url}?scid={RAKUTEN_AFFILIATE_ID}"
+        return RakutenItem(
+            item_name=name or "",
+            item_price=float(price),
+            item_url=url,
+            shop_name=first.get("shopName"),
+        )
