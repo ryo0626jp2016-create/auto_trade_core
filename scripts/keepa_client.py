@@ -229,13 +229,13 @@ def get_product_info(asin: str) -> Optional[ProductStats]:
 
     domain_id = _get_domain_id(config.domain)
 
+    # ★★ ここが重要：buybox パラメータは送らない ★★
     params = {
         "key": config.api_key,
         "domain": domain_id,
         "asin": asin,
         "stats": 90,   # 過去90日の stats を取得
         "history": 1,  # 価格や在庫などの履歴 data を取得
-        "buybox": 1,   # BuyBox 履歴を取得
     }
 
     try:
