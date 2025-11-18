@@ -1,4 +1,3 @@
-# scripts/keepa_client.py
 from __future__ import annotations
 
 import os
@@ -6,7 +5,7 @@ import tomllib  # Python 3.11 以降
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple
 
-import requests  # 直接 Keepa HTTP API を叩く用
+import keepa  # ★ 公式 Python ライブラリを使用する
 
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.toml")
@@ -35,8 +34,8 @@ class ProductStats:
     amazon_current: bool                     # 現在の BuyBox が Amazon かどうか
 
     # FBA 手数料計算などに使うための追加情報
-    weight_kg: Optional[float]               # 梱包重量(kg)
-    dimensions_cm: Optional[Tuple[float, float, float]]  # (長辺, 中辺, 短辺) cm
+    weight_kg: Optional[float]               # 梱包重量(kg) - Keepa packageWeight を g とみなして換算
+    dimensions_cm: Optional[Tuple[float, float, float]]  # (長辺, 中辺, 短辺) cm - packageLength/Width/Height
     category: Optional[str]                  # productGroup 等から取ったざっくりカテゴリ
 
 
@@ -54,6 +53,33 @@ def load_keepa_config() -> KeepaConfig:
     )
 
 
+def _get_domain_id(domain_str: str) -> int:
+    """
+    Keepa の domain ID に変換する。
+    JP = 5
+
+    ※ 今回は Python keepa ライブラリに任せるので、
+       現状はデバッグ用途だけで使用。
+    """
+    domain_str = (domain_str or "").upper()
+    mapping = {
+        "US": 1,
+        "UK": 2,
+        "DE": 3,
+        "FR": 4,
+        "JP": 5,
+        "CA": 6,
+        "CN": 7,
+        "IT": 8,
+        "ES": 9,
+        "IN": 10,
+        "MX": 11,
+        "BR": 12,
+    }
+    # デフォルトは日本
+    return mapping.get(domain_str, 5)
+
+
 def _get_avg_rank_90d_from_stats(stats: Dict[str, Any]) -> Optional[int]:
     """
     Keepa statistics object の avg90 配列から
@@ -65,6 +91,9 @@ def _get_avg_rank_90d_from_stats(stats: Dict[str, Any]) -> Optional[int]:
       AMAZON, NEW, USED, SALES, LISTPRICE, ... の順
       → SALES = index 3
     """
+    if not stats:
+        return None
+
     avg90: List[int] = stats.get("avg90") or []
     if len(avg90) <= 3:
         return None
@@ -85,6 +114,9 @@ def _get_expected_sell_price_from_stats(stats: Dict[str, Any]) -> Optional[float
     Keepa の価格は「通貨の 1/100 単位」で返ってくる（例: 2500 = 25.00）ため、
     100で割って実際の通貨に変換する。
     """
+    if not stats:
+        return None
+
     raw_price = stats.get("buyBoxPrice")
     if raw_price is None or raw_price <= 0:
         return None
@@ -95,6 +127,13 @@ def _get_expected_sell_price_from_stats(stats: Dict[str, Any]) -> Optional[float
 def analyze_amazon_presence(product: Dict[str, Any]) -> Dict[str, Any]:
     """
     Keepa product データから Amazon 本体の参入履歴を分析する。
+
+    戻り値:
+    {
+        "amazon_presence_ratio": float | None,   # 過去期間の何割で Amazon 在庫ありか（0.0〜1.0）
+        "amazon_buybox_count": int | None,       # Amazon が BuyBox を取っていた回数
+        "amazon_current": bool,                  # 現在の BuyBox が Amazon かどうか
+    }
     """
     stats: Dict[str, Any] = product.get("stats") or {}
     data: Dict[str, Any] = product.get("data") or {}
@@ -125,34 +164,12 @@ def analyze_amazon_presence(product: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _get_domain_id(domain_str: str) -> int:
-    """
-    Keepa の domain ID に変換する。
-    JP = 5
-    """
-    domain_str = (domain_str or "").upper()
-    mapping = {
-        "US": 1,
-        "UK": 2,
-        "DE": 3,
-        "FR": 4,
-        "JP": 5,
-        "CA": 6,
-        "CN": 7,
-        "IT": 8,
-        "ES": 9,
-        "IN": 10,
-        "MX": 11,
-        "BR": 12,
-    }
-    return mapping.get(domain_str, 5)
-
-
 def _extract_weight_and_dimensions(
     product: Dict[str, Any],
 ) -> Tuple[Optional[float], Optional[Tuple[float, float, float]]]:
     """
     Keepa product から重量(g)とサイズ(mm)を取得して、
+    FBA料金計算に使いやすいように
     - 重量: kg
     - サイズ: cm
     に変換して返す。
@@ -189,9 +206,22 @@ def _extract_category(product: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+# --- Keepa ライブラリのインスタンスを一度だけ作って使い回す ---
+_keepa_api: Optional[keepa.Keepa] = None
+
+
+def _get_keepa_api(api_key: str) -> keepa.Keepa:
+    global _keepa_api
+    if _keepa_api is None:
+        _keepa_api = keepa.Keepa(api_key)
+    return _keepa_api
+
+
 def get_product_info(asin: str) -> Optional[ProductStats]:
     """
     指定した ASIN の Keepa 情報を取得し、仕入れ判定に必要な要約情報を返す。
+
+    ここでは Python の keepa ライブラリを使用する。
     """
     config = load_keepa_config()
 
@@ -203,50 +233,26 @@ def get_product_info(asin: str) -> Optional[ProductStats]:
     domain_id = _get_domain_id(config.domain)
     print(f"[DEBUG] Keepa domain (id) = {domain_id}")
 
-    # ★ 重要：stats=1, days=90 に修正
-    params = {
-        "key": config.api_key,
-        "domain": domain_id,  # int でもOK
-        "asin": asin,
-        "stats": 1,    # stats オブジェクトを含めるかどうか
-        "days": 90,    # 統計対象日数
-        "history": 1,  # 価格や在庫などの履歴 data を取得
-        "buybox": 1,   # BuyBox 履歴を取得
-    }
+    api = _get_keepa_api(config.api_key)
 
     try:
-        resp = requests.get(
-            "https://api.keepa.com/product",
-            params=params,
-            timeout=30,
+        # stats=True, history=True, buybox=True を指定
+        products = api.query(
+            asin,
+            stats=True,
+            history=True,
+            buybox=True,
+            # domain=domain_id  # 必要なら指定。ASIN は共通なので省略でも通常は動く。
         )
     except Exception as e:
-        print(f"[ERROR] HTTP error when calling Keepa for ASIN {asin}: {e}")
+        print(f"[ERROR] keepa.Keepa.query error for ASIN {asin}: {e}")
         return None
 
-    print(f"[DEBUG] HTTP status for ASIN {asin}: {resp.status_code}")
-
-    try:
-        data = resp.json()
-    except Exception as e:
-        print(f"[ERROR] Could not decode JSON for ASIN {asin}: {e}")
-        print(f"[DEBUG] Raw response: {resp.text[:200]}")
-        return None
-
-    if "error" in data and data["error"]:
-        print(f"[ERROR] Keepa API error for ASIN {asin}: {data['error']}")
-        if isinstance(data["error"], dict):
-            print(f"[ERROR] details: {data['error'].get('details')}")
-            print(f"[ERROR] message: {data['error'].get('message')}")
-            print(f"[ERROR] type: {data['error'].get('type')}")
-        return None
-
-    products: List[Dict[str, Any]] = data.get("products") or []
     if not products:
         print(f"[WARN] Keepa returned no product for ASIN {asin}")
         return None
 
-    p = products[0]
+    p: Dict[str, Any] = products[0]
 
     title = p.get("title", "") or ""
     stats = p.get("stats") or {}
@@ -254,8 +260,13 @@ def get_product_info(asin: str) -> Optional[ProductStats]:
     avg_rank_90d = _get_avg_rank_90d_from_stats(stats)
     expected_sell_price = _get_expected_sell_price_from_stats(stats)
 
+    # Amazon本体の参入履歴を解析
     amazon_info = analyze_amazon_presence(p)
+
+    # FBA 手数料計算用の重さ・サイズ
     weight_kg, dimensions_cm = _extract_weight_and_dimensions(p)
+
+    # ざっくりカテゴリ
     category = _extract_category(p)
 
     return ProductStats(
