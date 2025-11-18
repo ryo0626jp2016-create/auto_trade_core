@@ -1,162 +1,105 @@
 # scripts/run_selection.py
-
 from __future__ import annotations
 
-import csv
 import os
-from dataclasses import dataclass
-from typing import List
-
-from .keepa_client import get_product_info
-from .fba_fee import estimate_fba_fee
-from .profit_calc import estimate_amazon_fee
 import tomllib
+from dataclasses import dataclass
+from typing import Any, Dict
 
-# このファイルと同じディレクトリの config.toml を読む
+import pandas as pd
+
+
+# リポジトリのルートを基準にパスを決める
+# （python -m scripts.run_selection を auto_trade_core のルートで実行する想定）
+BASE_DIR = os.path.dirname(os.path.dirname(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+
+INPUT_PATH = os.path.join(DATA_DIR, "input_candidates.csv")
+OUTPUT_PATH = os.path.join(DATA_DIR, "output_selected.csv")
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.toml")
-
-# 候補ASINリストと、結果CSVのパス
-INPUT_CSV = os.path.join("data", "input_candidates.csv")
-OUTPUT_CSV = os.path.join("data", "output_selected.csv")
 
 
 @dataclass
 class SelectionConfig:
-    """仕入れ判定用のしきい値設定"""
-    min_profit: float                     # 最低利益（円）
-    min_roi: float                        # 最低ROI
-    max_avg_rank_90d: int                 # 90日平均ランキングの上限
-    block_amazon_current_buybox: bool     # 現在Amazon本体がカート取得中ならNGにするか
-    debug_no_fba_fee: bool = False        # デバッグ時：FBA手数料を0として計算するか
+    """
+    以前のログと互換性を保つためのダミー設定クラス。
+    実際の選別ロジックは filter_asins.py 側でやる。
+    """
+    min_profit: int = 300
+    min_roi: float = 0.3
+    max_avg_rank_90d: int = 250000
+    block_amazon_current_buybox: bool = True
+    debug_no_fba_fee: bool = False
 
 
 def load_selection_config() -> SelectionConfig:
-    """scripts/config.toml から selection 設定を読み込む"""
+    """
+    config.toml に [selection] セクションがあれば読み込む。
+    無ければデフォルト値で返す。
+    """
+    if not os.path.exists(CONFIG_PATH):
+        return SelectionConfig()
+
     with open(CONFIG_PATH, "rb") as f:
         raw = tomllib.load(f)
 
-    s = raw["selection"]
+    sel: Dict[str, Any] = raw.get("selection", {}) or {}
+
     return SelectionConfig(
-        min_profit=s.get("min_profit", 1),
-        min_roi=s.get("min_roi", 0.0),
-        max_avg_rank_90d=s.get("max_avg_rank_90d", 200000),
-        block_amazon_current_buybox=s.get("block_amazon_current_buybox", True),
-        debug_no_fba_fee=s.get("debug_no_fba_fee", False),
+        min_profit=int(sel.get("min_profit", 300)),
+        min_roi=float(sel.get("min_roi", 0.3)),
+        max_avg_rank_90d=int(sel.get("max_avg_rank_90d", 250000)),
+        block_amazon_current_buybox=bool(sel.get("block_amazon_current_buybox", True)),
+        debug_no_fba_fee=bool(sel.get("debug_no_fba_fee", False)),
     )
 
 
-def read_candidates() -> List[tuple[str, float, str]]:
+def run_selection() -> None:
     """
-    data/input_candidates.csv を読み込む。
-    フォーマット:
-        asin,buy_price,notes
+    役割：
+      - data/input_candidates.csv を読み込む
+      - ASIN 列があることを確認
+      - そのまま data/output_selected.csv として書き出す
+
+    実際の Keepa / 楽天 / 利益判定は filter_asins.py 側で実施。
     """
-    items: List[tuple[str, float, str]] = []
-
-    if not os.path.exists(INPUT_CSV):
-        print(f"[ERROR] input not found: {INPUT_CSV}")
-        return items
-
-    with open(INPUT_CSV, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            asin = row["asin"].strip()
-            buy_price = float(row["buy_price"])
-            notes = row.get("notes", "")
-            items.append((asin, buy_price, notes))
-
-    return items
-
-
-def main() -> None:
     config = load_selection_config()
     print(f"Loaded config: {config}")
 
-    candidates = read_candidates()
-    print(f"Loaded {len(candidates)} candidate items.")
+    print(f"[INFO] Loading input candidates from: {INPUT_PATH}")
+    if not os.path.exists(INPUT_PATH):
+        raise FileNotFoundError(
+            f"候補リストが見つかりませんでした: {INPUT_PATH}\n"
+            "data/input_candidates.csv に ASIN リストを保存してください。"
+        )
 
-    results: list[list] = []
+    # input_candidates.csv は CSV 想定
+    df = pd.read_csv(INPUT_PATH)
 
-    for asin, buy_price, notes in candidates:
-        print(f"\n=== Evaluating ASIN {asin} ===")
+    # ASIN 列は必須
+    asin_col_candidates = ["ASIN", "asin", "asin_code", "asinコード"]
+    asin_col = None
+    for c in asin_col_candidates:
+        if c in df.columns:
+            asin_col = c
+            break
 
-        # Keepa から商品情報取得
-        product = get_product_info(asin)
-        if not product:
-            print(" - Skip: Could not fetch Keepa data.")
-            continue
+    if asin_col is None:
+        raise ValueError(
+            f"ASIN 列が見つかりませんでした。"
+            f" 想定ヘッダ: {asin_col_candidates}, 実際の列: {list(df.columns)}"
+        )
 
-        print(f" - Title: {product.title}")
-        print(f" - Expected sell price: {product.expected_sell_price}")
-        print(f" - Avg rank 90d: {product.avg_rank_90d}")
-        print(f" - Amazon presence ratio: {product.amazon_presence_ratio}")
-        print(f" - buybox_count: {product.amazon_buybox_count}")
-        print(f" - current_is_amazon: {product.amazon_current}")
+    # 今回は特に条件を絞らず、そのまま出力にコピー
+    os.makedirs(DATA_DIR, exist_ok=True)
+    df.to_csv(OUTPUT_PATH, index=False)
+    print(f"[INFO] Wrote selected candidates to: {OUTPUT_PATH}")
+    print(f"[INFO] rows: {len(df)}")
 
-        # ① ランク判定
-        if product.avg_rank_90d and product.avg_rank_90d > config.max_avg_rank_90d:
-            print(f" - Decision: NG (rank_too_low_{product.avg_rank_90d})")
-            continue
 
-        # ② Amazon本体の現在カート取得をブロックするか
-        if config.block_amazon_current_buybox and product.amazon_current:
-            print(" - Decision: NG (amazon_current_buybox)")
-            continue
-
-        # ③ 販売価格が取れなければNG
-        if not product.expected_sell_price:
-            print(" - Decision: NG (sell_price_missing)")
-            continue
-
-        # ④ FBA & 販売手数料の計算
-        if config.debug_no_fba_fee:
-            fba_fee = 0.0
-        else:
-            # fba_fee.py の estimate_fba_fee(product) を利用
-            fba_fee = estimate_fba_fee(product)
-
-        amazon_fee = estimate_amazon_fee(product.expected_sell_price)
-
-        profit = product.expected_sell_price - buy_price - fba_fee - amazon_fee
-        roi = profit / buy_price if buy_price > 0 else 0.0
-
-        print(f" - Profit (after FBA & Amazon fee): {profit}")
-        print(f" - ROI: {roi}")
-        print(f"   (FBA fee: {fba_fee}, Amazon fee: {amazon_fee})")
-
-        # ⑤ 利益条件判定
-        if profit < config.min_profit:
-            print(f" - Decision: NG (profit_too_low_{profit})")
-            continue
-
-        if roi < config.min_roi:
-            print(f" - Decision: NG (roi_too_low_{roi})")
-            continue
-
-        # ⑥ ここまで来たら仕入れ候補として採用
-        print(" - Decision: OK")
-        results.append([
-            asin,
-            product.title,
-            buy_price,
-            product.expected_sell_price,
-            profit,
-            roi,
-            notes,
-        ])
-
-    # ⑦ CSV出力
-    if results:
-        os.makedirs("data", exist_ok=True)
-        with open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["asin", "title", "buy_price", "sell_price", "profit", "roi", "notes"])
-            writer.writerows(results)
-        print(f"Saved: {OUTPUT_CSV}")
-    else:
-        print("No items passed selection criteria. No CSV will be written.")
+def main() -> None:
+    run_selection()
 
 
 if __name__ == "__main__":
     main()
-
