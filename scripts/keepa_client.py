@@ -1,3 +1,4 @@
+# scripts/keepa_client.py
 from __future__ import annotations
 
 import os
@@ -88,20 +89,12 @@ def _get_expected_sell_price_from_stats(stats: Dict[str, Any]) -> Optional[float
     if raw_price is None or raw_price <= 0:
         return None
 
-    # 100 で割って通貨に変換（日本なら基本的にはほぼそのまま円相当）
     return raw_price / 100.0
 
 
 def analyze_amazon_presence(product: Dict[str, Any]) -> Dict[str, Any]:
     """
     Keepa product データから Amazon 本体の参入履歴を分析する。
-
-    戻り値:
-    {
-        "amazon_presence_ratio": float | None,   # 過去期間の何割で Amazon 在庫ありか（0.0〜1.0）
-        "amazon_buybox_count": int | None,       # Amazon が BuyBox を取っていた回数
-        "amazon_current": bool,                  # 現在の BuyBox が Amazon かどうか
-    }
     """
     stats: Dict[str, Any] = product.get("stats") or {}
     data: Dict[str, Any] = product.get("data") or {}
@@ -152,7 +145,6 @@ def _get_domain_id(domain_str: str) -> int:
         "MX": 11,
         "BR": 12,
     }
-    # デフォルトは日本
     return mapping.get(domain_str, 5)
 
 
@@ -190,13 +182,10 @@ def _extract_weight_and_dimensions(
 def _extract_category(product: Dict[str, Any]) -> Optional[str]:
     """
     ざっくりしたカテゴリ情報を文字列で返す。
-    FBA料金計算では「default / toys / beauty / electronics」など
-    大雑把なカテゴリで分ける想定。
     """
     pg = product.get("productGroup")
     if isinstance(pg, str) and pg:
         return pg
-
     return None
 
 
@@ -211,15 +200,16 @@ def get_product_info(asin: str) -> Optional[ProductStats]:
     if len(config.api_key) < 10:
         print("[ERROR] Keepa API key が短すぎます。config.toml / Secrets を確認してください。")
 
-    # ★ ここが重要：domain は「文字列の数字」で投げる
-    domain_id_str = str(_get_domain_id(config.domain))
-    print(f"[DEBUG] Keepa domain (id string) = {domain_id_str}")
+    domain_id = _get_domain_id(config.domain)
+    print(f"[DEBUG] Keepa domain (id) = {domain_id}")
 
+    # ★ 重要：stats=1, days=90 に修正
     params = {
         "key": config.api_key,
-        "domain": domain_id_str,  # '5' などの文字列
+        "domain": domain_id,  # int でもOK
         "asin": asin,
-        "stats": 90,   # 過去90日の stats を取得
+        "stats": 1,    # stats オブジェクトを含めるかどうか
+        "days": 90,    # 統計対象日数
         "history": 1,  # 価格や在庫などの履歴 data を取得
         "buybox": 1,   # BuyBox 履歴を取得
     }
@@ -243,7 +233,6 @@ def get_product_info(asin: str) -> Optional[ProductStats]:
         print(f"[DEBUG] Raw response: {resp.text[:200]}")
         return None
 
-    # エラーが返ってきた場合は内容を表示してスキップ
     if "error" in data and data["error"]:
         print(f"[ERROR] Keepa API error for ASIN {asin}: {data['error']}")
         if isinstance(data["error"], dict):
@@ -265,13 +254,8 @@ def get_product_info(asin: str) -> Optional[ProductStats]:
     avg_rank_90d = _get_avg_rank_90d_from_stats(stats)
     expected_sell_price = _get_expected_sell_price_from_stats(stats)
 
-    # Amazon本体の参入履歴を解析
     amazon_info = analyze_amazon_presence(p)
-
-    # FBA 手数料計算用の重さ・サイズ
     weight_kg, dimensions_cm = _extract_weight_and_dimensions(p)
-
-    # ざっくりカテゴリ
     category = _extract_category(p)
 
     return ProductStats(
