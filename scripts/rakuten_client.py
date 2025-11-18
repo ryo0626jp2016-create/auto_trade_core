@@ -61,8 +61,8 @@ class RakutenClient:
         params = {
             "applicationId": self.application_id,
             "keyword": keyword,
-            "hits": 1,          # 1件だけ
-            "sort": "+itemPrice",  # 価格の安い順
+            "hits": 1,              # 1件だけ
+            "sort": "+itemPrice",   # 価格の安い順
             "format": "json",
         }
 
