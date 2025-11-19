@@ -40,7 +40,6 @@ def _parse_product(p) -> Optional[ProductStats]:
     if price == -1: price = None
     
     amz_price = current.get(0, None)
-    # 在庫なし(-1)や0円以下はNone扱い
     if amz_price is not None and amz_price <= 0:
         amz_price = None
 
@@ -60,7 +59,8 @@ def _parse_product(p) -> Optional[ProductStats]:
 def get_product_info(asin: str) -> Optional[ProductStats]:
     api = keepa.Keepa(load_config())
     try:
-        products = api.query(items=[asin], domain=5)
+        # 【修正】 domain=5 -> domain='JP'
+        products = api.query(items=[asin], domain='JP')
         return _parse_product(products[0]) if products else None
     except:
         return None
@@ -68,15 +68,13 @@ def get_product_info(asin: str) -> Optional[ProductStats]:
 def find_product_by_keyword(keyword: str) -> Optional[ProductStats]:
     """
     Amazon検索バーのような「あいまい検索」を行う
-    コスト: 1トークン (非常に安い)
     """
     api = keepa.Keepa(load_config())
     try:
-        # product_code_is_asin=False にするとキーワード検索モードになる
-        products = api.query(items=[keyword], domain=5, product_code_is_asin=False)
+        # 【修正】 domain=5 -> domain='JP'
+        products = api.query(items=[keyword], domain='JP', product_code_is_asin=False)
         
         if products:
-            # 最も関連度の高い商品(先頭)を返す
             return _parse_product(products[0])
         return None
     except Exception as e:
