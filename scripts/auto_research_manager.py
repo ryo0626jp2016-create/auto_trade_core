@@ -1,6 +1,6 @@
 """
 auto_research_manager.py
-【低負荷版】 楽天ランキング -> 徹底待機(10秒) -> Amazon不在＆利益品を抽出
+【高速・高精度版】 楽天ランキング -> あいまい検索(2秒) -> 利益品抽出
 """
 from __future__ import annotations
 import csv
@@ -13,7 +13,6 @@ from scripts.rakuten_client import RakutenClient
 from scripts.keepa_client import find_product_by_keyword
 from scripts.fba_calculator import calculate_fba_fees
 
-# === ジャンル ===
 TARGET_GENRES = [
     {"id": "100939", "name": "美容・コスメ"},
     {"id": "562637", "name": "家電"},
@@ -21,27 +20,30 @@ TARGET_GENRES = [
     {"id": "101213", "name": "ペット用品"},
 ]
 
-# === 判定基準 ===
-MIN_PROFIT = 500
+MIN_PROFIT = 300       # 少し緩めて広く拾う
 MIN_ROI = 0.10
-MAX_RANK = 80000
+MAX_RANK = 100000
 
 OUTPUT_FILE = f"data/order_list_{datetime.now().strftime('%Y%m%d')}.csv"
 
 def clean_product_name(name: str) -> str:
-    """検索精度を上げ、負荷を下げるために商品名をきれいにする"""
-    # 【】や()の中身を削除
+    """楽天特有のノイズを除去してAmazon検索にヒットしやすくする"""
+    # 【】や[]の中身ごと削除
     name = re.sub(r'【.*?】', ' ', name)
-    name = re.sub(r'\(.*?\)', ' ', name)
     name = re.sub(r'\[.*?\]', ' ', name)
-    # 特定のキーワード削除
-    name = name.replace("送料無料", "").replace("公式", "").replace("正規品", "").replace("楽天", "")
-    # 先頭35文字だけ使う
-    return name.strip()[:35]
+    name = re.sub(r'\(.*?\)', ' ', name)
+    
+    # ノイズワード削除
+    noise = ["送料無料", "公式", "正規品", "楽天", "ポイント", "倍", "クーポン", "OFF", "SALE", "即納"]
+    for n in noise:
+        name = name.replace(n, " ")
+        
+    # 空白を整理して、先頭30文字を取得 (Amazon検索は短い方がヒットしやすい)
+    return " ".join(name.split())[:30]
 
 def run_research():
-    print("=== Starting Auto Research (Low Load Mode) ===")
-    print(f"[Settings] Wait: 10s per item to avoid API limit.")
+    print("=== Starting Auto Research (Fuzzy Search Mode) ===")
+    print(f"[Settings] Wait: 2s per item. Min Profit: ¥{MIN_PROFIT}")
     
     try:
         r_client = RakutenClient()
@@ -59,18 +61,18 @@ def run_research():
         except:
             continue
 
-        # ジャンルごとに上位5件だけにする（さらに負荷を下げるため。慣れたら増やしてください）
-        # ※最初は確実に成功させるため数を絞ります
-        items = items[:5]
+        # テスト用: 上位10件ずつチェック (慣れたら items[:10] を items に戻して全件へ)
+        check_items = items[:10]
 
-        for i, r_item in enumerate(items, 1):
-            print(f"[{i}/{len(items)}] {r_item.name[:10]}...", end=" ")
-            
-            # 【重要】絶対に止まらないように10秒待つ
-            time.sleep(10)
-
-            # 商品名を整形して検索
+        for i, r_item in enumerate(check_items, 1):
+            # クリーニング後の名称
             search_query = clean_product_name(r_item.name)
+            
+            print(f"[{i}/{len(check_items)}] search: '{search_query}' ...", end=" ")
+            
+            # コストが1トークンになったので2秒待てば余裕で回復する
+            time.sleep(2)
+
             k_item = find_product_by_keyword(search_query)
             
             if not k_item:
@@ -114,7 +116,7 @@ def run_research():
                     "asin": k_item.asin
                 })
             else:
-                print(f"-> Low Profit")
+                print(f"-> Low Profit (¥{profit})")
 
     # 保存
     if all_candidates:
@@ -130,7 +132,7 @@ def run_research():
             
         print(f"\n[SUCCESS] Saved {len(all_candidates)} items to {OUTPUT_FILE}")
     else:
-        print("\n[RESULT] No items matched.")
+        print("\n[RESULT] No profitable items found in this batch.")
 
 if __name__ == "__main__":
     run_research()
