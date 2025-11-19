@@ -22,8 +22,8 @@ TARGET_GENRES = [
 
 # === 判定基準 ===
 MIN_PROFIT = 500       # 最低利益 (円)
-MIN_ROI = 0.10         # 最低利益率 (10%) - 幅広く拾うため少し下げました
-MAX_RANK = 80000       # ランキング上限 (8万位以内ならかなり売れている)
+MIN_ROI = 0.10         # 最低利益率 (10%)
+MAX_RANK = 80000       # ランキング上限
 
 OUTPUT_FILE = f"data/order_list_{datetime.now().strftime('%Y%m%d')}.csv"
 
@@ -53,11 +53,10 @@ def run_research():
         for i, r_item in enumerate(items, 1):
             print(f"[{i}/{len(items)}] {r_item.name[:15]}...", end=" ")
             
-            # 【修正】API制限回避のため、待機時間を3秒に延長
-            # REQUEST_REJECTED エラー対策
-            time.sleep(3)
+            # 【修正】API制限回避のため、待機時間を5秒に設定
+            time.sleep(5)
 
-            # Amazonで検索 (検索精度向上のため記号を除去)
+            # Amazonで検索
             search_query = r_item.name[:40].replace("【", " ").replace("】", " ")
             k_item = find_product_by_keyword(search_query)
             
@@ -67,8 +66,7 @@ def run_research():
 
             # === 安全フィルター (Safety Filters) ===
             
-            # ① Amazon本体がいるか (最重要)
-            # keepa_client側で在庫なしはNoneになるよう調整済み
+            # ① Amazon本体がいるか
             if k_item.amazon_current is not None:
                 print("-> NG (Amazon Exists)")
                 continue
@@ -97,7 +95,7 @@ def run_research():
                 print(f"-> ★OK! Profit: ¥{profit} (ROI: {roi:.1%})")
                 
                 all_candidates.append({
-                    "genre": genre['name'], # どのジャンルか
+                    "genre": genre['name'],
                     "status": "未発注",
                     "item_name": k_item.title,
                     "profit": int(profit),
@@ -113,10 +111,9 @@ def run_research():
             else:
                 print(f"-> Low Profit (¥{profit})")
 
-    # 2. 全ジャンルの結果をまとめて保存
+    # 2. CSV保存
     if all_candidates:
         os.makedirs("data", exist_ok=True)
-        # 利益額が高い順に並べ替え（一番儲かる商品を一番上に）
         all_candidates.sort(key=lambda x: x["profit"], reverse=True)
         
         fieldnames = ["status", "genre", "item_name", "profit", "roi", "buy_price", "sell_price", "fees", "rank", "rakuten_url", "amazon_url", "asin"]
@@ -127,10 +124,8 @@ def run_research():
             writer.writerows(all_candidates)
             
         print(f"\n" + "="*50)
-        print(f" [SUCCESS] Total {len(all_candidates)} profitable items found across {len(TARGET_GENRES)} genres!")
+        print(f" [SUCCESS] Total {len(all_candidates)} profitable items found!")
         print(f" Saved to: {OUTPUT_FILE}")
-        if all_candidates:
-            print(f" Top Item Profit: ¥{all_candidates[0]['profit']}")
         print("="*50)
     else:
         print("\n[RESULT] Unfortunately, no items matched the criteria this time.")
