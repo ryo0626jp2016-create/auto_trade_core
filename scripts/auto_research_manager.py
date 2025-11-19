@@ -1,6 +1,6 @@
 """
 auto_research_manager.py
-楽天ランキング(仕入れ) -> Keepa(Amazon価格) -> 利益計算 -> 発注CSV
+AI厳選の複数ジャンルを巡回 -> 楽天ランキング -> Amazon不在＆利益品を抽出 -> 発注リスト化
 """
 from __future__ import annotations
 import csv
@@ -12,95 +12,127 @@ from scripts.rakuten_client import RakutenClient
 from scripts.keepa_client import find_product_by_keyword
 from scripts.fba_calculator import calculate_fba_fees
 
-# === 設定エリア ===
-# 狙うジャンルID (例: 100939=コスメ, 100371=レディースファッション, 562637=家電)
-# 空欄 "" なら総合ランキング
-TARGET_GENRE_ID = "100939" 
-MIN_PROFIT = 500   # 最低利益
-MIN_ROI = 0.1      # 最低利益率(10%)
+# === AI厳選：稼げるジャンルリスト ===
+TARGET_GENRES = [
+    {"id": "100939", "name": "美容・コスメ"}, # 回転率最強・FBA手数料安い
+    {"id": "562637", "name": "家電"},        # 単価が高い・利益額大きい
+    {"id": "215783", "name": "日用品・雑貨"}, # 安定需要
+    {"id": "101213", "name": "ペット用品"},   # ライバル少なめ
+]
+
+# === 判定基準 ===
+MIN_PROFIT = 500       # 最低利益 (円)
+MIN_ROI = 0.10         # 最低利益率 (10%) - 幅広く拾うため少し下げました
+MAX_RANK = 80000       # ランキング上限 (8万位以内ならかなり売れている)
 
 OUTPUT_FILE = f"data/order_list_{datetime.now().strftime('%Y%m%d')}.csv"
 
 def run_research():
-    print("=== Starting Auto Research (Reverse Sourcing) ===")
+    print("=== Starting Auto Research (Multi-Genre Mode) ===")
+    print(f"[Settings] Skip Amazon Sellers. Min Profit: ¥{MIN_PROFIT}")
     
-    # 1. 楽天から候補取得
     try:
         r_client = RakutenClient()
-        items = r_client.get_ranking(genre_id=TARGET_GENRE_ID)
-        print(f"[Rakuten] Fetched {len(items)} items from ranking.")
     except Exception as e:
-        print(f"[Error] Failed to fetch Rakuten: {e}")
+        print(f"[CRITICAL ERROR] Rakuten Client Init Failed: {e}")
         return
 
-    results = []
+    all_candidates = []
 
-    for i, r_item in enumerate(items, 1):
-        print(f"[{i}/{len(items)}] Checking: {r_item.name[:30]}...", end=" ")
+    # 1. 各ジャンルを巡回してリサーチ
+    for genre in TARGET_GENRES:
+        print(f"\n>>> Scanning Genre: {genre['name']} (ID: {genre['id']}) <<<")
         
-        # 2. Amazonで検索 (JANがないのでタイトル検索)
-        # 検索精度を高めるため、商品名の先頭部分だけを使う
-        search_query = r_item.name[:40].replace("【", " ").replace("】", " ")
-        
-        k_item = find_product_by_keyword(search_query)
-        
-        if not k_item:
-            print("-> Amazon Not Found.")
+        try:
+            items = r_client.get_ranking(genre_id=genre['id'])
+            print(f"[Rakuten] Fetched {len(items)} items.")
+        except Exception as e:
+            print(f"[Error] Failed to fetch genre {genre['name']}: {e}")
             continue
 
-        # 3. 利益計算
-        sell_price = k_item.expected_sell_price
-        if not sell_price:
-            print("-> No Amazon Price.")
-            continue
+        for i, r_item in enumerate(items, 1):
+            print(f"[{i}/{len(items)}] {r_item.name[:15]}...", end=" ")
+            
+            # API制限考慮
+            time.sleep(1.5)
 
-        # FBA手数料計算
-        fees = calculate_fba_fees(sell_price, k_item.weight_kg, k_item.dimensions_cm)
-        buy_price = r_item.price
-        
-        profit = sell_price - buy_price - fees
-        roi = profit / buy_price if buy_price > 0 else 0
+            # Amazonで検索 (検索精度向上のため記号を除去)
+            search_query = r_item.name[:40].replace("【", " ").replace("】", " ")
+            k_item = find_product_by_keyword(search_query)
+            
+            if not k_item:
+                print("-> Amazon Not Found.")
+                continue
 
-        # 結果表示
-        if profit >= MIN_PROFIT and roi >= MIN_ROI:
-            print(f"-> OK! Profit: ¥{profit} (ROI: {roi:.1%})")
-            status = "未発注"
-        else:
-            print(f"-> Low Profit: ¥{profit}")
-            status = "利益不足"
+            # === 安全フィルター (Safety Filters) ===
+            
+            # ① Amazon本体がいるか (最重要)
+            # keepa_client側で在庫なしはNoneになるよう調整済み
+            if k_item.amazon_current is not None:
+                print("-> NG (Amazon Exists)")
+                continue
 
-        # 4. リスト追加
-        results.append({
-            "status": status, # 管理用
-            "profit": int(profit),
-            "roi": f"{roi:.1%}",
-            "item_name": k_item.title,
-            "asin": k_item.asin,
-            "buy_price": buy_price,
-            "sell_price": sell_price,
-            "fees": fees,
-            "rakuten_url": r_item.url,
-            "amazon_url": f"https://www.amazon.co.jp/dp/{k_item.asin}",
-            "rank": k_item.avg_rank_90d
-        })
-        
-        # API制限考慮
-        time.sleep(1)
+            # ② ランキングチェック
+            if k_item.avg_rank_90d is None or k_item.avg_rank_90d > MAX_RANK:
+                rank_display = k_item.avg_rank_90d if k_item.avg_rank_90d else "Unknown"
+                print(f"-> NG (Rank: {rank_display})")
+                continue
+                
+            # ③ 売価チェック
+            sell_price = k_item.expected_sell_price
+            if not sell_price:
+                print("-> NG (No Price)")
+                continue
 
-    # 5. CSV保存
-    if results:
+            # 利益計算 (FBA手数料込)
+            fees = calculate_fba_fees(sell_price, k_item.weight_kg, k_item.dimensions_cm)
+            buy_price = r_item.price
+            
+            profit = sell_price - buy_price - fees
+            roi = profit / buy_price if buy_price > 0 else 0
+
+            # 判定
+            if profit >= MIN_PROFIT and roi >= MIN_ROI:
+                print(f"-> ★OK! Profit: ¥{profit} (ROI: {roi:.1%})")
+                
+                all_candidates.append({
+                    "genre": genre['name'], # どのジャンルか
+                    "status": "未発注",
+                    "item_name": k_item.title,
+                    "profit": int(profit),
+                    "roi": f"{roi:.1%}",
+                    "buy_price": buy_price,
+                    "sell_price": sell_price,
+                    "fees": fees,
+                    "rank": k_item.avg_rank_90d,
+                    "rakuten_url": r_item.url,
+                    "amazon_url": f"https://www.amazon.co.jp/dp/{k_item.asin}",
+                    "asin": k_item.asin
+                })
+            else:
+                print(f"-> Low Profit (¥{profit})")
+
+    # 2. 全ジャンルの結果をまとめて保存
+    if all_candidates:
         os.makedirs("data", exist_ok=True)
-        # 利益が出る順に並べ替え
-        results.sort(key=lambda x: x["profit"], reverse=True)
+        # 利益額が高い順に並べ替え（一番儲かる商品を一番上に）
+        all_candidates.sort(key=lambda x: x["profit"], reverse=True)
+        
+        fieldnames = ["status", "genre", "item_name", "profit", "roi", "buy_price", "sell_price", "fees", "rank", "rakuten_url", "amazon_url", "asin"]
         
         with open(OUTPUT_FILE, "w", encoding="utf-8", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=results[0].keys())
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
-            writer.writerows(results)
-        print(f"\nSaved result to {OUTPUT_FILE}")
-        print("Check the CSV and start ordering!")
+            writer.writerows(all_candidates)
+            
+        print(f"\n" + "="*50)
+        print(f" [SUCCESS] Total {len(all_candidates)} profitable items found across {len(TARGET_GENRES)} genres!")
+        print(f" Saved to: {OUTPUT_FILE}")
+        if all_candidates:
+            print(f" Top Item Profit: ¥{all_candidates[0]['profit']}")
+        print("="*50)
     else:
-        print("\nNo products matched the criteria.")
+        print("\n[RESULT] Unfortunately, no items matched the criteria this time.")
 
 if __name__ == "__main__":
     run_research()
