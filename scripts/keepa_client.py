@@ -29,40 +29,27 @@ def load_config() -> str:
     raise ValueError("KEEPA_API_KEY missing.")
 
 def _parse_product(p) -> Optional[ProductStats]:
-    """Keepaの生データを整形"""
     if not p.get("title"): return None
-    
     stats = p.get("stats", {})
     avg90 = stats.get("avg90", {})
     current = stats.get("current", {})
     
-    # 価格: 新品(1) または BuyBox(18)
-    # 90日平均を優先
     price = avg90.get(18, avg90.get(1, None))
     if price is None or price < 0:
-        # 平均がない場合は現在価格を見る
         price = current.get(18, current.get(1, None))
-    
     if price == -1: price = None
     
-    # Amazon本体価格 (index 0)
-    # ここで在庫切れ(-1)や0円をNoneに変換する重要処理
     amz_price = current.get(0, None)
     if amz_price is not None and amz_price <= 0:
         amz_price = None
 
-    # 重量・サイズ (Keepaはg, mm単位で返すため変換)
-    w = p.get("packageWeight", 0) / 1000.0 # g -> kg
-    dims = [
-        p.get("packageLength", 0) / 10.0, # mm -> cm
-        p.get("packageWidth", 0) / 10.0,
-        p.get("packageHeight", 0) / 10.0
-    ]
+    w = p.get("packageWeight", 0) / 1000.0
+    dims = [p.get("packageLength", 0)/10.0, p.get("packageWidth", 0)/10.0, p.get("packageHeight", 0)/10.0]
 
     return ProductStats(
         asin=p.get("asin"),
         title=p.get("title"),
-        avg_rank_90d=avg90.get(3, None), # 3=SalesRank
+        avg_rank_90d=avg90.get(3, None),
         expected_sell_price=price,
         weight_kg=w,
         dimensions_cm=dims,
@@ -78,17 +65,24 @@ def get_product_info(asin: str) -> Optional[ProductStats]:
         return None
 
 def find_product_by_keyword(keyword: str) -> Optional[ProductStats]:
-    """商品名やJANで検索して、最も売れているASINの詳細を返す"""
+    # 高コスト: 20トークン消費
     api = keepa.Keepa(load_config())
     try:
-        # product_finder searchを使用 (domain=5: JP)
-        # title検索を行う
         result = api.product_finder({'title': keyword, 'perPage': 1, 'page': 0}, domain='JP')
-        if result and len(result) > 0:
-             # ASINリストが返ってくるので詳細取得
-             asin = result[0]
-             return get_product_info(asin)
+        if result: return get_product_info(result[0])
         return None
-    except Exception as e:
-        print(f"Search Error: {e}")
+    except:
+        return None
+
+def find_product_by_jan(code: str) -> Optional[ProductStats]:
+    """JANコードで検索 (低コスト: 1トークン)"""
+    if not code: return None
+    api = keepa.Keepa(load_config())
+    try:
+        # product_code_is_asin=False でJAN検索
+        products = api.query(items=[code], domain=5, product_code_is_asin=False)
+        if products and products[0].get("title"):
+            return _parse_product(products[0])
+        return None
+    except:
         return None
