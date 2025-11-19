@@ -9,11 +9,9 @@ import os
 import csv
 from typing import List, Dict, Any, Optional
 
-# 既存のクライアント読み込み
+# 自作モジュールの読み込み
 from scripts.keepa_client import get_product_info, ProductStats
-# 【追加】判定ロジックを読み込み
 from scripts.evaluator import evaluate_item
-
 
 # === 入出力パス ===
 INPUT_DIR = os.path.join("data", "raw_keepa")
@@ -47,7 +45,7 @@ def load_asin_from_csv(file_path: str) -> List[str]:
             if asin_index is not None and len(row) > asin_index:
                 asin = row[asin_index].strip()
             else:
-                # ヘッダーにASINがない場合、1列目をASINとみなす
+                # ヘッダーにASIN列が見つからない場合、1列目をASINとみなす
                 asin = row[0].strip()
 
             if asin and asin not in asins:
@@ -64,8 +62,11 @@ def scan_bulk_asins(asins: List[str]) -> List[Dict[str, Any]]:
     results: List[Dict[str, Any]] = []
     total = len(asins)
 
+    print(f"Starting scan for {total} items...")
+
     for i, asin in enumerate(asins, 1):
-        print(f"[{i}/{total}] Checking ASIN: {asin} ...", end=" ", flush=True)
+        # 進捗表示
+        print(f"[{i}/{total}] ASIN: {asin} ...", end=" ", flush=True)
 
         # 1. Keepaデータ取得
         info: Optional[ProductStats] = get_product_info(asin)
@@ -125,7 +126,6 @@ def main():
     # === Step1: raw_keepa フォルダ内のCSVを全部読み込む ===
     if not os.path.exists(INPUT_DIR):
         print(f"[WARNING] Input directory not found: {INPUT_DIR}")
-        # 動作確認用にディレクトリだけ作っておく
         os.makedirs(INPUT_DIR, exist_ok=True)
         print(f"Created empty directory: {INPUT_DIR}. Please upload CSVs here.")
         return
