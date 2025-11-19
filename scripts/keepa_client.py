@@ -22,7 +22,10 @@ def load_config() -> str:
     if env_key: return env_key
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH, "rb") as f:
-            return tomllib.load(f)["keepa"]["api_key"]
+            try:
+                return tomllib.load(f)["keepa"]["api_key"]
+            except:
+                pass
     raise ValueError("KEEPA_API_KEY missing.")
 
 def _parse_product(p) -> Optional[ProductStats]:
@@ -34,14 +37,21 @@ def _parse_product(p) -> Optional[ProductStats]:
     current = stats.get("current", {})
     
     # 価格: 新品(1) または BuyBox(18)
+    # 90日平均を優先
     price = avg90.get(18, avg90.get(1, None))
+    if price is None or price < 0:
+        # 平均がない場合は現在価格を見る
+        price = current.get(18, current.get(1, None))
+    
     if price == -1: price = None
     
-    # Amazon本体価格
+    # Amazon本体価格 (index 0)
+    # ここで在庫切れ(-1)や0円をNoneに変換する重要処理
     amz_price = current.get(0, None)
-    if amz_price == -1: amz_price = None
+    if amz_price is not None and amz_price <= 0:
+        amz_price = None
 
-    # 重量・サイズ
+    # 重量・サイズ (Keepaはg, mm単位で返すため変換)
     w = p.get("packageWeight", 0) / 1000.0 # g -> kg
     dims = [
         p.get("packageLength", 0) / 10.0, # mm -> cm
@@ -68,7 +78,7 @@ def get_product_info(asin: str) -> Optional[ProductStats]:
         return None
 
 def find_product_by_keyword(keyword: str) -> Optional[ProductStats]:
-    """商品名やJANで検索して、最も売れているASINを返す"""
+    """商品名やJANで検索して、最も売れているASINの詳細を返す"""
     api = keepa.Keepa(load_config())
     try:
         # product_finder searchを使用 (domain=5: JP)
