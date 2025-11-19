@@ -6,8 +6,12 @@ on:
 jobs:
   run-selection:
     runs-on: ubuntu-latest
+    # 【重要】ここで環境変数を定義することで、このジョブ内の全ステップでキーが有効になります
     env:
       TZ: Asia/Tokyo
+      KEEPA_API_KEY: ${{ secrets.KEEPA_API_KEY }}
+      RAKUTEN_APP_ID: ${{ secrets.RAKUTEN_APP_ID }}
+      RAKUTEN_SECRET: ${{ secrets.RAKUTEN_SECRET }}
 
     steps:
       - name: Checkout repository
@@ -23,40 +27,34 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 念のため scripts ディレクトリを作成（既にあっても問題なし）
-      - name: Ensure scripts directory exists
-        run: mkdir -p scripts
+      - name: Ensure directories exist
+        run: |
+          mkdir -p scripts
+          mkdir -p data
 
-      # ① ASIN選定処理（Keepaで情報を取得して output_selected.csv を作成）
-      - name: Run selection script
+      # 候補作成 (run_selection)
+      - name: Run selection logic
         run: |
           python -m scripts.run_selection
 
-      # ② フィルタ（Keepa + 楽天API）
-      #    → output_selected.csv が存在するときだけ実行
-      - name: Run ASIN filter (Keepa + 楽天)
+      # フィルタリング (filter_asins)
+      # ここで APIキーが必要になりますが、上の env で定義済みなので動作します
+      - name: Filter ASINs with Keepa/Rakuten
         run: |
           if [ -f "data/output_selected.csv" ]; then
             echo "data/output_selected.csv found. Running filter_asins.py ..."
-            python scripts/filter_asins.py \
-              --input "data/output_selected.csv" \
-              --output-dir "output/filtered_asins"
+            # 必要な引数があれば適宜追加してください
+            python -m scripts.filter_asins --input data/output_selected.csv --output data/final_list.csv
           else
-            echo "data/output_selected.csv not found. Skip filter_asins step."
+            echo "No output_selected.csv found, skipping filter step."
           fi
 
-      # ③ 選定結果（元CSV）
-      - name: Upload result CSV
+      # 結果の保存
+      - name: Upload results
         uses: actions/upload-artifact@v4
         with:
-          name: output_selected
-          path: data/output_selected.csv
-          if-no-files-found: ignore
-
-      # ④ 厳選ASINリスト（Excel）
-      - name: Upload filtered ASIN files
-        uses: actions/upload-artifact@v4
-        with:
-          name: filtered_asins
-          path: output/filtered_asins/*.xlsx
+          name: selection_results
+          path: |
+            data/output_selected.csv
+            data/final_list.csv
           if-no-files-found: ignore
