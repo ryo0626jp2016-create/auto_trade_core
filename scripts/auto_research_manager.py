@@ -53,8 +53,9 @@ def run_research():
         for i, r_item in enumerate(items, 1):
             print(f"[{i}/{len(items)}] {r_item.name[:15]}...", end=" ")
             
-            # API制限考慮
-            time.sleep(1.5)
+            # 【修正】API制限回避のため、待機時間を3秒に延長
+            # REQUEST_REJECTED エラー対策
+            time.sleep(3)
 
             # Amazonで検索 (検索精度向上のため記号を除去)
             search_query = r_item.name[:40].replace("【", " ").replace("】", " ")
