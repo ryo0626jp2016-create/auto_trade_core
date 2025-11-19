@@ -40,6 +40,7 @@ def _parse_product(p) -> Optional[ProductStats]:
     if price == -1: price = None
     
     amz_price = current.get(0, None)
+    # 在庫なし(-1)や0円以下はNone扱い
     if amz_price is not None and amz_price <= 0:
         amz_price = None
 
@@ -65,24 +66,19 @@ def get_product_info(asin: str) -> Optional[ProductStats]:
         return None
 
 def find_product_by_keyword(keyword: str) -> Optional[ProductStats]:
-    # 高コスト: 20トークン消費
+    """
+    Amazon検索バーのような「あいまい検索」を行う
+    コスト: 1トークン (非常に安い)
+    """
     api = keepa.Keepa(load_config())
     try:
-        result = api.product_finder({'title': keyword, 'perPage': 1, 'page': 0}, domain='JP')
-        if result: return get_product_info(result[0])
-        return None
-    except:
-        return None
-
-def find_product_by_jan(code: str) -> Optional[ProductStats]:
-    """JANコードで検索 (低コスト: 1トークン)"""
-    if not code: return None
-    api = keepa.Keepa(load_config())
-    try:
-        # product_code_is_asin=False でJAN検索
-        products = api.query(items=[code], domain=5, product_code_is_asin=False)
-        if products and products[0].get("title"):
+        # product_code_is_asin=False にするとキーワード検索モードになる
+        products = api.query(items=[keyword], domain=5, product_code_is_asin=False)
+        
+        if products:
+            # 最も関連度の高い商品(先頭)を返す
             return _parse_product(products[0])
         return None
-    except:
+    except Exception as e:
+        print(f"Search Error: {e}")
         return None
