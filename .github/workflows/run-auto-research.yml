@@ -3,14 +3,15 @@ name: Auto Research & Order Management
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: "0 0 * * *" # 日本時間 朝9時 (UTC 0:00)
+    # 毎日 日本時間 朝9時 (UTC 0:00) に実行
+    - cron: "0 0 * * *"
 
 jobs:
   research:
     runs-on: ubuntu-latest
     env:
       TZ: Asia/Tokyo
-      # 環境変数をセット
+      # Secretsから環境変数をセット
       KEEPA_API_KEY: ${{ secrets.KEEPA_API_KEY }}
       RAKUTEN_APP_ID: ${{ secrets.RAKUTEN_APP_ID }}
       RAKUTEN_SECRET: ${{ secrets.RAKUTEN_SECRET }}
@@ -26,7 +27,11 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests keepa pandas tomllib
+          # 【修正】tomllib は不要なので削除しました
+          pip install requests keepa pandas
+
+      - name: Ensure directories exist
+        run: mkdir -p data
 
       - name: Run Research
         run: |
