@@ -26,7 +26,14 @@ jobs:
       - name: Ensure scripts directory exists
         run: mkdir -p scripts
 
+      # dataフォルダがないとエラーになる場合があるため作成
+      - name: Ensure data directory exists
+        run: mkdir -p data/raw_keepa
+
       - name: Run bulk Keepa scan
+        env:
+          # 【重要】Secretsを環境変数としてPythonに渡す
+          KEEPA_API_KEY: ${{ secrets.KEEPA_API_KEY }}
         run: |
           python -m scripts.bulk_keepa_scan
 
@@ -34,5 +41,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: keepa_scan_candidates
-          path: data/bulk_candidates.csv
+          # 【修正】Pythonが出力するファイル名と一致させる
+          path: data/keepa_scan_candidates.csv
           if-no-files-found: ignore
