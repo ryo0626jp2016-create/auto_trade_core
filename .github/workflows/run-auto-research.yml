@@ -1,0 +1,40 @@
+name: Auto Research & Order Management
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 0 * * *" # 日本時間 朝9時 (UTC 0:00)
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Tokyo
+      # 環境変数をセット
+      KEEPA_API_KEY: ${{ secrets.KEEPA_API_KEY }}
+      RAKUTEN_APP_ID: ${{ secrets.RAKUTEN_APP_ID }}
+      RAKUTEN_SECRET: ${{ secrets.RAKUTEN_SECRET }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install requests keepa pandas tomllib
+
+      - name: Run Research
+        run: |
+          python -m scripts.auto_research_manager
+
+      - name: Upload Order List
+        uses: actions/upload-artifact@v4
+        with:
+          name: order_list
+          path: data/order_list_*.csv
+          if-no-files-found: warn
