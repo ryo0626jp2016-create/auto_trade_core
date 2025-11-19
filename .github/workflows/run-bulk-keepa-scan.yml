@@ -23,16 +23,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Ensure scripts directory exists
-        run: mkdir -p scripts
-
-      # dataフォルダがないとエラーになる場合があるため作成
-      - name: Ensure data directory exists
-        run: mkdir -p data/raw_keepa
+      - name: Ensure directories exist
+        run: |
+          mkdir -p scripts
+          mkdir -p data/raw_keepa
 
       - name: Run bulk Keepa scan
         env:
-          # 【重要】Secretsを環境変数としてPythonに渡す
+          # GitHub Secrets から APIキーを注入
           KEEPA_API_KEY: ${{ secrets.KEEPA_API_KEY }}
         run: |
           python -m scripts.bulk_keepa_scan
@@ -41,6 +39,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: keepa_scan_candidates
-          # 【修正】Pythonが出力するファイル名と一致させる
+          # Pythonスクリプトの出力パスと一致させる
           path: data/keepa_scan_candidates.csv
           if-no-files-found: ignore
