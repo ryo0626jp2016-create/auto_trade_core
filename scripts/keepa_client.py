@@ -39,6 +39,7 @@ def _parse_product(p) -> Optional[ProductStats]:
         price = current.get(18, current.get(1, None))
     if price == -1: price = None
     
+    # Amazon本体価格
     amz_price = current.get(0, None)
     if amz_price is not None and amz_price <= 0:
         amz_price = None
@@ -59,23 +60,20 @@ def _parse_product(p) -> Optional[ProductStats]:
 def get_product_info(asin: str) -> Optional[ProductStats]:
     api = keepa.Keepa(load_config())
     try:
-        # 【修正】 domain=5 -> domain='JP'
-        products = api.query(items=[asin], domain='JP')
+        products = api.query(items=[asin], domain=5)
         return _parse_product(products[0]) if products else None
     except:
         return None
 
 def find_product_by_keyword(keyword: str) -> Optional[ProductStats]:
-    """
-    Amazon検索バーのような「あいまい検索」を行う
-    """
+    """キーワード検索"""
     api = keepa.Keepa(load_config())
     try:
-        # 【修正】 domain=5 -> domain='JP'
-        products = api.query(items=[keyword], domain='JP', product_code_is_asin=False)
-        
-        if products:
-            return _parse_product(products[0])
+        # タイトル検索, 1件のみ取得
+        result = api.product_finder({'title': keyword, 'perPage': 1, 'page': 0}, domain='JP')
+        if result and len(result) > 0:
+             asin = result[0]
+             return get_product_info(asin)
         return None
     except Exception as e:
         print(f"Search Error: {e}")
