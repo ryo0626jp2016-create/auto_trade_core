@@ -1,0 +1,45 @@
+name: Run Gap Search (Rakuten vs Amazon)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  gap-search:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Tokyo
+      RAKUTEN_APP_ID: ${{ secrets.RAKUTEN_APP_ID }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install pandas requests keepa
+
+      - name: Ensure data directory exists
+        run: mkdir -p data
+
+      # ここで、あなたがアップロードしたCSVがあることを確認
+      - name: Check input file
+        run: |
+          if [ ! -f data/order_list_keepa.csv ]; then
+            echo "Error: data/order_list_keepa.csv not found!"
+            exit 1
+          fi
+
+      - name: Run Gap Search
+        run: python -m scripts.execute_gap_search
+
+      - name: Upload Profitable List
+        uses: actions/upload-artifact@v4
+        with:
+          name: profitable_list
+          path: data/profitable_list.csv
+          if-no-files-found: warn
