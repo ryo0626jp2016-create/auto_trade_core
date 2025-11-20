@@ -1,6 +1,6 @@
 """
 auto_research_manager.py
-【高速・高精度版】 楽天ランキング -> あいまい検索(2秒) -> 利益品抽出
+【接続テスト用】 各ジャンルTOP1商品のみ、65秒間隔で確実にリサーチ
 """
 from __future__ import annotations
 import csv
@@ -13,6 +13,7 @@ from scripts.rakuten_client import RakutenClient
 from scripts.keepa_client import find_product_by_keyword
 from scripts.fba_calculator import calculate_fba_fees
 
+# === ジャンル ===
 TARGET_GENRES = [
     {"id": "100939", "name": "美容・コスメ"},
     {"id": "562637", "name": "家電"},
@@ -20,30 +21,24 @@ TARGET_GENRES = [
     {"id": "101213", "name": "ペット用品"},
 ]
 
-MIN_PROFIT = 300       # 少し緩めて広く拾う
-MIN_ROI = 0.10
-MAX_RANK = 100000
+# === 判定基準 (テストなので緩く設定) ===
+MIN_PROFIT = 1         # 1円以上ならリストに入れる
+MIN_ROI = 0.01         # 1%以上なら入れる
+MAX_RANK = 500000      # ほぼ何でもOK
 
 OUTPUT_FILE = f"data/order_list_{datetime.now().strftime('%Y%m%d')}.csv"
 
 def clean_product_name(name: str) -> str:
-    """楽天特有のノイズを除去してAmazon検索にヒットしやすくする"""
-    # 【】や[]の中身ごと削除
+    """検索精度向上のための整形"""
     name = re.sub(r'【.*?】', ' ', name)
-    name = re.sub(r'\[.*?\]', ' ', name)
     name = re.sub(r'\(.*?\)', ' ', name)
-    
-    # ノイズワード削除
-    noise = ["送料無料", "公式", "正規品", "楽天", "ポイント", "倍", "クーポン", "OFF", "SALE", "即納"]
-    for n in noise:
-        name = name.replace(n, " ")
-        
-    # 空白を整理して、先頭30文字を取得 (Amazon検索は短い方がヒットしやすい)
-    return " ".join(name.split())[:30]
+    name = re.sub(r'\[.*?\]', ' ', name)
+    name = name.replace("送料無料", "").replace("公式", "").replace("正規品", "").replace("楽天", "")
+    # 長すぎるとヒットしないので35文字制限
+    return name.strip()[:35]
 
 def run_research():
-    print("=== Starting Auto Research (Fuzzy Search Mode) ===")
-    print(f"[Settings] Wait: 2s per item. Min Profit: ¥{MIN_PROFIT}")
+    print("=== Starting Connection Test (1 Item/Genre, 65s Wait) ===")
     
     try:
         r_client = RakutenClient()
@@ -57,71 +52,67 @@ def run_research():
         print(f"\n>>> Scanning Genre: {genre['name']} <<<")
         try:
             items = r_client.get_ranking(genre_id=genre['id'])
-            print(f"[Rakuten] Fetched {len(items)} items.")
+            print(f"[Rakuten] Fetched items.")
         except:
+            print("Rakuten Fetch Error")
             continue
 
-        # テスト用: 上位10件ずつチェック (慣れたら items[:10] を items に戻して全件へ)
-        check_items = items[:10]
+        if not items:
+            continue
 
-        for i, r_item in enumerate(check_items, 1):
-            # クリーニング後の名称
-            search_query = clean_product_name(r_item.name)
-            
-            print(f"[{i}/{len(check_items)}] search: '{search_query}' ...", end=" ")
-            
-            # コストが1トークンになったので2秒待てば余裕で回復する
-            time.sleep(2)
+        # 【テスト用】各ジャンル 1位の商品だけチェック
+        top_item = items[0] 
+        
+        print(f"[Check] {top_item.name[:15]}...", end=" ")
+        
+        # 【重要】65秒待つ (これで回復しないプランはない)
+        time.sleep(65)
 
-            k_item = find_product_by_keyword(search_query)
-            
-            if not k_item:
-                print("-> Not Found.")
-                continue
+        # 検索
+        search_query = clean_product_name(top_item.name)
+        k_item = find_product_by_keyword(search_query)
+        
+        if not k_item:
+            print("-> Amazon Not Found.")
+            continue
 
-            # === フィルター ===
-            if k_item.amazon_current is not None:
-                print("-> NG (Amazon Exists)")
-                continue
+        # データ取得成功！
+        print(f"-> Found! (ASIN: {k_item.asin})")
 
-            if k_item.avg_rank_90d is None or k_item.avg_rank_90d > MAX_RANK:
-                print(f"-> NG (Rank: {k_item.avg_rank_90d})")
-                continue
-                
-            sell_price = k_item.expected_sell_price
-            if not sell_price:
-                print("-> NG (No Price)")
-                continue
+        # 利益計算
+        sell_price = k_item.expected_sell_price
+        if not sell_price:
+            print("-> No Price")
+            # テストなので売価がなくても、Amazonで見つかった事実を残すために保存しても良いが
+            # 計算エラーになるので今回はスキップ
+            continue
 
-            # 利益計算
-            fees = calculate_fba_fees(sell_price, k_item.weight_kg, k_item.dimensions_cm)
-            buy_price = r_item.price
-            profit = sell_price - buy_price - fees
-            roi = profit / buy_price if buy_price > 0 else 0
+        fees = calculate_fba_fees(sell_price, k_item.weight_kg, k_item.dimensions_cm)
+        buy_price = top_item.price
+        profit = sell_price - buy_price - fees
+        roi = profit / buy_price if buy_price > 0 else 0
 
-            if profit >= MIN_PROFIT and roi >= MIN_ROI:
-                print(f"-> ★OK! ¥{profit}")
-                all_candidates.append({
-                    "genre": genre['name'],
-                    "status": "未発注",
-                    "item_name": k_item.title,
-                    "profit": int(profit),
-                    "roi": f"{roi:.1%}",
-                    "buy_price": buy_price,
-                    "sell_price": sell_price,
-                    "fees": fees,
-                    "rank": k_item.avg_rank_90d,
-                    "rakuten_url": r_item.url,
-                    "amazon_url": f"https://www.amazon.co.jp/dp/{k_item.asin}",
-                    "asin": k_item.asin
-                })
-            else:
-                print(f"-> Low Profit (¥{profit})")
+        print(f"   Profit: {profit} yen")
+
+        # テストなので条件に関わらずAmazonで見つかれば保存候補へ
+        all_candidates.append({
+            "genre": genre['name'],
+            "status": "未発注",
+            "item_name": k_item.title,
+            "profit": int(profit),
+            "roi": f"{roi:.1%}",
+            "buy_price": buy_price,
+            "sell_price": sell_price,
+            "fees": fees,
+            "rank": k_item.avg_rank_90d,
+            "rakuten_url": top_item.url,
+            "amazon_url": f"https://www.amazon.co.jp/dp/{k_item.asin}",
+            "asin": k_item.asin
+        })
 
     # 保存
     if all_candidates:
         os.makedirs("data", exist_ok=True)
-        all_candidates.sort(key=lambda x: x["profit"], reverse=True)
         
         fieldnames = ["status", "genre", "item_name", "profit", "roi", "buy_price", "sell_price", "fees", "rank", "rakuten_url", "amazon_url", "asin"]
         
@@ -130,9 +121,9 @@ def run_research():
             writer.writeheader()
             writer.writerows(all_candidates)
             
-        print(f"\n[SUCCESS] Saved {len(all_candidates)} items to {OUTPUT_FILE}")
+        print(f"\n[SUCCESS] Test Complete! Saved {len(all_candidates)} items to {OUTPUT_FILE}")
     else:
-        print("\n[RESULT] No profitable items found in this batch.")
+        print("\n[RESULT] No items found (Keepa search failed or no price).")
 
 if __name__ == "__main__":
     run_research()
