@@ -9,6 +9,24 @@ MIN_ROI = 10.0          # 最低利益率（%）
 AMAZON_FEE_RATE = 0.10  # Amazon販売手数料（10%仮定）
 FBA_FEE_FIXED = 550     # FBA配送代行手数料（標準サイズ仮定）
 
+def clean_price(value):
+    """
+    '¥ 3,980' や '1,200' などの文字列から記号を取り除いて数値(int)にする
+    """
+    if pd.isna(value) or value == '':
+        return 0
+    
+    # 文字列に変換してからクリーニング
+    s = str(value)
+    # 円マーク、カンマ、スペースを除去
+    s = s.replace('¥', '').replace(',', '').replace(' ', '').strip()
+    
+    try:
+        # 一度floatにしてからintにする（.0などがついている場合に備えて）
+        return int(float(s))
+    except ValueError:
+        return 0
+
 def calculate_metrics(amazon_price, rakuten_price, shipping):
     # 仕入れ値（商品 + 送料）
     cost = rakuten_price + shipping
@@ -40,11 +58,14 @@ def main():
         print(f"CSV Load Error: {e}")
         return
 
+    # 列名の確認（デバッグ用）
+    # print("Columns:", df.columns.tolist())
+
     if 'jan' not in df.columns:
         print("Error: CSV must contain 'jan' column.")
         return
 
-    # JANがあるデータのみ抽出
+    # データがある行だけ抽出
     df = df.dropna(subset=['jan', 'target_price'])
     
     client = RakutenClient()
@@ -53,21 +74,27 @@ def main():
     print(f"Starting Research for {len(df)} items...")
     
     for index, row in df.iterrows():
-        # JANコードの整形（.0がついている場合などに対応）
+        # JANコードの整形
         try:
             jan = str(int(float(row['jan'])))
         except:
             jan = str(row['jan'])
             
-        amazon_price = int(row['target_price'])
+        # ★ここを修正：clean_price関数を通す
+        amazon_price = clean_price(row['target_price'])
+        
         asin = row['asin']
         
+        # 価格が取得できなかった（0円）の場合はスキップ
+        if amazon_price == 0:
+            continue
+
         # 進捗表示
         if index % 10 == 0:
-            print(f"Processing {index}/{len(df)}...")
+            print(f"Processing {index}/{len(df)}... (ASIN: {asin})")
 
         # 楽天リサーチ実行
-        # Amazon価格より高いものはそもそも利益が出ないので検索上限にする
+        # Amazon価格より高いものは利益が出ないので検索上限にする
         rakuten_item = client.search_item(jan_code=jan, max_price=amazon_price)
         
         if rakuten_item:
@@ -80,7 +107,7 @@ def main():
                 results.append({
                     "asin": asin,
                     "jan": jan,
-                    "item_name": row['keyword'][:30], # 長すぎるのでカット
+                    "item_name": str(row['keyword'])[:30], 
                     "amazon_price": amazon_price,
                     "rakuten_price": rakuten_item.price,
                     "rakuten_shipping": rakuten_item.shipping,
@@ -90,8 +117,7 @@ def main():
                     "amazon_url": row['url']
                 })
             else:
-                # 利益が出ない場合のログ（デバッグ用、うるさければコメントアウト）
-                # print(f"Skip: {asin} (Profit: {int(profit)})")
+                # 利益が出ない場合
                 pass
 
     # 結果の保存
