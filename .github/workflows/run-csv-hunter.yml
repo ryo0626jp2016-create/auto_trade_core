@@ -1,0 +1,68 @@
+name: CSV Hunter (Offline Mode)
+
+on:
+  workflow_dispatch: # 手動実行
+
+jobs:
+  csv-hunt:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Tokyo
+      RAKUTEN_APP_ID: ${{ secrets.RAKUTEN_APP_ID }}
+      # Keepa APIキーは不要です！
+      MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+      MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pandas requests
+
+      - name: Prepare Data Directory
+        run: mkdir -p data/raw_keepa
+
+      # 【重要】ここにCSVファイルを配置するステップが必要ですが、
+      # GitHubのリポジトリに直接アップロードするのが一番簡単です。
+      # リポジトリの data/raw_keepa/ フォルダに CSV を置いてください。
+
+      - name: Run CSV Hunter
+        run: python -m scripts.csv_hunter
+
+      - name: Check file existence
+        id: check_file
+        run: |
+          if ls data/hunter_result_*.csv 1> /dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Send mail
+        if: steps.check_file.outputs.exists == 'true'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: 【CSV分析完了】利益商品リスト
+          body: |
+            CSVファイルの分析が完了しました。
+            利益商品を添付します。
+          to: gyoumuyou0626@gmail.com
+          from: CSV Hunter Bot <${{ secrets.MAIL_USERNAME }}>
+          attachments: data/hunter_result_*.csv
+
+      - name: Upload Result CSV
+        if: steps.check_file.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: hunter_result
+          path: data/hunter_result_*.csv
