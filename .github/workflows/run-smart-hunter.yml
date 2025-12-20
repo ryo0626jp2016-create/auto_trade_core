@@ -1,9 +1,9 @@
 name: Smart Hunter (PC & Ink)
 
 on:
-  workflow_dispatch: # 手動実行ボタン
+  workflow_dispatch:
   schedule:
-    - cron: "0 10 * * *" # 日本時間 19:00 (UTC 10:00) に実行
+    - cron: "0 10 * * *" # 日本時間 19:00 (UTC 10:00)
 
 jobs:
   hunt:
@@ -12,8 +12,9 @@ jobs:
       TZ: Asia/Tokyo
       KEEPA_API_KEY: ${{ secrets.KEEPA_API_KEY }}
       RAKUTEN_APP_ID: ${{ secrets.RAKUTEN_APP_ID }}
-      # RAKUTEN_SECRET は今回のコードでは使っていませんが念のため
       RAKUTEN_SECRET: ${{ secrets.RAKUTEN_SECRET }}
+      MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+      MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
 
     steps:
       - name: Checkout
@@ -30,9 +31,38 @@ jobs:
       - name: Run Smart Hunter
         run: python -m scripts.smart_hunter
 
+      # CSVが存在するかチェック
+      - name: Check file existence
+        id: check_file
+        run: |
+          if ls data/hunter_result_*.csv 1> /dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      # CSVがある場合のみメール送信
+      - name: Send mail
+        if: steps.check_file.outputs.exists == 'true'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: 【利益商品通知】Smart Hunter 結果
+          body: |
+            お疲れ様です。
+            本日のリサーチ結果（利益商品リスト）を添付します。
+            
+            添付のCSVを確認してください。
+          to: gyoumuyou0626@gmail.com
+          from: Smart Hunter Bot <${{ secrets.MAIL_USERNAME }}>
+          attachments: data/hunter_result_*.csv
+
       - name: Upload Result CSV
+        if: steps.check_file.outputs.exists == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: hunter_result
           path: data/hunter_result_*.csv
-          if-no-files-found: ignore
