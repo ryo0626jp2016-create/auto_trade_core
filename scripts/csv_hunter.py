@@ -1,7 +1,6 @@
 """
 scripts/csv_hunter.py
 KeepaからエクスポートしたCSVを読み込み、楽天と価格比較を行う超高速リサーチツール
-(修正版: 複数JANコード対応)
 """
 import os
 import glob
@@ -9,6 +8,7 @@ import pandas as pd
 import time
 from datetime import datetime
 from scripts.rakuten_client import RakutenClient
+from scripts.fba_calculator import calculate_fba_fees
 
 # === 設定 ===
 INPUT_DIR = "data/raw_keepa"   # CSVを置く場所
@@ -39,16 +39,13 @@ def get_fba_fee_estimate(row):
     if pd.isna(size_cm3): size_cm3 = 1000
     
     # 簡易計算 (寸法が不明なため体積と重量で推測)
+    # 小型軽量: 重さ1kg以下 かつ 体積小さめ -> 434円 (配送代行+諸経費)
+    # 標準: -> 514円〜
     fee = 450 # ベース
-    try:
-        w = float(weight_g)
-        s = float(size_cm3)
-        if w > 1000 or s > 15000:
-            fee = 700 # 大型扱い
-        elif w > 500:
-            fee = 550
-    except:
-        pass # エラー時はベース料金
+    if weight_g > 1000 or size_cm3 > 15000:
+        fee = 700 # 大型扱い
+    elif weight_g > 500:
+        fee = 550
         
     return fee
 
@@ -75,22 +72,11 @@ def main():
         print(f"Found {len(df)} items. Starting research...")
 
         for index, row in df.iterrows():
-            # --- 【修正箇所】JANコード処理 ---
-            jan_raw = row.get('商品コード: EAN')
-            if pd.isna(jan_raw):
+            # JANコード (EAN) の取得
+            jan = row.get('商品コード: EAN')
+            if pd.isna(jan):
                 continue
-            
-            # 文字列にしてカンマで区切り、最初の1つを取得して空白削除
-            jan_str = str(jan_raw).split(',')[0].strip()
-            
-            try:
-                # 数値変換してゼロ埋め等はせずそのまま文字列として扱う
-                # Excel等で「4.98E+12」のようになっている場合の対策で一度floatにする
-                jan = str(int(float(jan_str)))
-            except ValueError:
-                # 変換できない変な文字が入っていたらスキップ
-                continue
-            # --------------------------------
+            jan = str(int(float(jan))) # "4988..." の形式にする
 
             # Amazon価格の取得 (Buy Box 優先 -> Amazon -> 新品)
             amazon_price = clean_price(row.get('Buy Box 🚚: 現在価格'))
@@ -113,7 +99,6 @@ def main():
             
             if not rakuten_item:
                 print("Rakuten: Not Found")
-                time.sleep(1) # API制限考慮
                 continue
 
             # 利益計算
@@ -147,7 +132,7 @@ def main():
             else:
                 print(f"Low Profit ({profit}円)")
             
-            # API制限考慮 (1秒待機)
+            # API制限考慮
             time.sleep(1)
 
     # 結果保存
